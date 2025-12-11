@@ -1,0 +1,66 @@
+services:
+  orly:
+    build:
+      context: ../next.orly.dev
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - orly-data:/data
+    environment:
+      - ORLY_PORT=8080
+      - ORLY_DATA_DIR=/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - benchmark
+
+  wisp:
+    build:
+      context: ../wisp
+      dockerfile: Dockerfile
+    ports:
+      - "7777:7777"
+    volumes:
+      - wisp-data:/data
+    environment:
+      - WISP_HOST=0.0.0.0
+      - WISP_PORT=7777
+      - WISP_STORAGE_PATH=/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7777"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - benchmark
+
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      orly:
+        condition: service_healthy
+      wisp:
+        condition: service_healthy
+    environment:
+      - BENCHMARK_RELAYS=orly,wisp
+      - BENCHMARK_EVENTS=10000
+      - BENCHMARK_WORKERS=4
+    volumes:
+      - ./reports:/reports
+    networks:
+      - benchmark
+    command: ["--relays", "orly,wisp", "-e", "10000", "-w", "4"]
+
+volumes:
+  orly-data:
+  wisp-data:
+
+networks:
+  benchmark:
+    driver: bridge

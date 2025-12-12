@@ -26,24 +26,20 @@ pub fn main() !void {
     var manager = relay.RelayManager.init(allocator);
     defer manager.deinit();
 
-    if (config.relay_url.len > 0) {
-        _ = try manager.addRelayUrl(config.relay_url);
-    } else {
-        for (config.relays) |kind| {
-            _ = try manager.addRelay(kind, null);
-        }
+    for (config.relays) |url| {
+        try manager.addRelay(url);
     }
 
     const relays = manager.getRelays();
     if (relays.len == 0) {
-        std.debug.print("No relays specified. Use --relay or --relays flag.\n", .{});
+        std.debug.print("No relays specified. Use --relay flag.\n", .{});
         printUsage();
         return;
     }
 
     for (relays) |r| {
         std.debug.print("\n────────────────────────────────────────────────────────────\n", .{});
-        std.debug.print("Benchmarking: {s}\n", .{r.kind.displayName()});
+        std.debug.print("Benchmarking: {s}\n", .{r.displayName()});
         std.debug.print("URL: {s}\n", .{r.url});
         std.debug.print("Workers: {d}\n", .{config.workers});
         std.debug.print("Events: {d}\n", .{config.num_events});
@@ -68,7 +64,7 @@ pub fn main() !void {
         defer bench.deinit();
 
         bench.run() catch |err| {
-            std.debug.print("Benchmark failed for {s}: {}\n", .{ r.kind.displayName(), err });
+            std.debug.print("Benchmark failed for {s}: {}\n", .{ r.displayName(), err });
             continue;
         };
         bench.printReport();
@@ -76,13 +72,13 @@ pub fn main() !void {
 }
 
 pub const Config = struct {
-    relay_url: []const u8,
+    relay_url: []const u8 = "",
     workers: u32,
     num_events: u32,
     duration_secs: u32,
     rate_per_worker: u32,
     report_dir: []const u8,
-    relays: []const relay.RelayKind = &[_]relay.RelayKind{},
+    relays: []const []const u8 = &[_][]const u8{},
     run_peak_throughput: bool = true,
     run_burst_pattern: bool = true,
     run_mixed_rw: bool = true,
@@ -95,14 +91,15 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
 
     _ = args.skip();
 
+    var relay_list = std.ArrayListUnmanaged([]const u8){};
+
     var config = Config{
-        .relay_url = "",
         .workers = @intCast(@max(2, (std.Thread.getCpuCount() catch 4) / 4)),
         .num_events = 10000,
         .duration_secs = 60,
         .rate_per_worker = 100,
         .report_dir = "/tmp/benchmark_reports",
-        .relays = &[_]relay.RelayKind{ .orly, .wisp },
+        .relays = &[_][]const u8{},
     };
 
     while (args.next()) |arg| {
@@ -110,10 +107,7 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
             printUsage();
             std.process.exit(0);
         } else if (std.mem.eql(u8, arg, "--relay") or std.mem.eql(u8, arg, "-r")) {
-            config.relay_url = args.next() orelse return error.MissingValue;
-        } else if (std.mem.eql(u8, arg, "--relays")) {
-            const relay_arg = args.next() orelse return error.MissingValue;
-            config.relays = try relay.parseRelayList(allocator, relay_arg);
+            try relay_list.append(allocator, args.next() orelse return error.MissingValue);
         } else if (std.mem.eql(u8, arg, "--workers") or std.mem.eql(u8, arg, "-w")) {
             const val = args.next() orelse return error.MissingValue;
             config.workers = try std.fmt.parseInt(u32, val, 10);
@@ -147,6 +141,7 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
         }
     }
 
+    config.relays = relay_list.items;
     return config;
 }
 
@@ -155,16 +150,14 @@ fn printUsage() void {
         \\Nostr Relay Benchmark
         \\
         \\USAGE:
-        \\    nostr-relay-benchmark [OPTIONS]
+        \\    nostr-bench [OPTIONS]
         \\
         \\OPTIONS:
-        \\    -r, --relay <URL>       Single relay WebSocket URL (overrides --relays)
-        \\    --relays <LIST>         Comma-separated relay names: orly,wisp (default: orly,wisp)
+        \\    -r, --relay <URL>       Relay WebSocket URL (can be specified multiple times)
         \\    -w, --workers <N>       Number of concurrent workers (default: CPU/4)
         \\    -e, --events <N>        Number of events to generate (default: 10000)
         \\    -d, --duration <SECS>   Test duration in seconds (default: 60)
         \\    --rate <N>              Events per second per worker (default: 100)
-        \\    --report-dir <PATH>     Directory for reports (default: /tmp/benchmark_reports)
         \\
         \\TEST MODES:
         \\    --only-peak             Run only peak throughput test
@@ -172,15 +165,10 @@ fn printUsage() void {
         \\    --only-mixed            Run only mixed read/write test
         \\    --only-query            Run only query performance test
         \\
-        \\SUPPORTED RELAYS:
-        \\    orly                    Orly relay (next.orly.dev) - default port 8080
-        \\    wisp                    Wisp relay - default port 7777
-        \\
         \\EXAMPLES:
-        \\    nostr-relay-benchmark --relays orly,wisp
-        \\    nostr-relay-benchmark --relays orly -w 8 -e 50000
-        \\    nostr-relay-benchmark -r ws://localhost:8080
-        \\    nostr-relay-benchmark --relays wisp --only-peak
+        \\    nostr-bench -r ws://localhost:3334
+        \\    nostr-bench -r ws://localhost:3334 -r ws://localhost:7777
+        \\    nostr-bench -r ws://localhost:3334 -e 5000 -w 8
         \\
     ;
     std.debug.print("{s}", .{usage});
@@ -188,7 +176,6 @@ fn printUsage() void {
 
 test "parse args" {
     _ = Config{
-        .relay_url = "ws://localhost:8080",
         .workers = 4,
         .num_events = 10000,
         .duration_secs = 60,

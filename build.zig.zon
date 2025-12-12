@@ -1,10 +1,10 @@
 .{
-    .name = .nostr_relay_benchmark,
+    .name = .nostr_bench,
     .version = "0.1.0",
-    .fingerprint = 0x5075904d4616651d,
+    .fingerprint = 0x8e285c4d4549b8cf,
     .dependencies = .{
-        .noscrypt = .{
-            .path = "../noscrypt",
+        .nostr = .{
+            .path = "../libnostr-z",
         },
     },
     .paths = .{

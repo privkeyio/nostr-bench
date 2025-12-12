@@ -1,12 +1,12 @@
 const std = @import("std");
 const nostr = @import("nostr.zig");
 
-/// Generate synthetic Nostr events for benchmarking
 pub fn generateEvents(
     allocator: std.mem.Allocator,
     keypair: *const nostr.Keypair,
     count: u32,
 ) ![]nostr.Event {
+    _ = keypair;
     std.debug.print("Generating {d} synthetic events...\n", .{count});
 
     const events = try allocator.alloc(nostr.Event, count);
@@ -14,40 +14,42 @@ pub fn generateEvents(
 
     const base_time = std.time.timestamp();
 
-    // Minimum content size for realistic events
     const min_content_size: usize = 300;
     const base_content = "This is a benchmark test event with realistic content size. ";
 
-    // Create padding for minimum size
     var padding: [256]u8 = undefined;
     for (&padding, 0..) |*byte, i| {
         byte.* = ' ' + @as(u8, @intCast(i % 94));
     }
 
+    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    const random = prng.random();
+
     for (events, 0..) |*event, i| {
+        const event_keypair = nostr.Keypair.generate();
+
         event.* = nostr.Event{
             .id = [_]u8{0} ** 32,
             .pubkey = [_]u8{0} ** 32,
-            .created_at = base_time + @as(i64, @intCast(i)),
-            .kind = 1, // Text note
-            .tags = &[_][]const []const u8{}, // Empty tags for simplicity
+            .created_at = base_time - @as(i64, @intCast(count - i)),
+            .kind = 1,
+            .tags = &[_][]const []const u8{},
             .content = undefined,
             .sig = [_]u8{0} ** 64,
             .allocator = allocator,
         };
 
-        // Generate content with unique identifier
         var content_buf: [512]u8 = undefined;
-        const content_len = std.fmt.bufPrint(&content_buf, "{s}Event #{d}. {s}", .{
+        const rand_suffix = random.int(u64);
+        const content_len = std.fmt.bufPrint(&content_buf, "{s}Event #{d}. {x}. {s}", .{
             base_content,
             i,
-            padding[0..@min(padding.len, min_content_size - base_content.len - 20)],
+            rand_suffix,
+            padding[0..@min(padding.len, min_content_size - base_content.len - 40)],
         }) catch unreachable;
 
         event.content = try allocator.dupe(u8, content_len);
-
-        // Sign the event
-        try nostr.signEvent(event, keypair);
+        try nostr.signEvent(event, &event_keypair);
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -59,7 +61,6 @@ pub fn generateEvents(
     return events;
 }
 
-/// Generate events with log-distributed sizes (more realistic)
 pub fn generateVariableSizeEvents(
     allocator: std.mem.Allocator,
     keypair: *const nostr.Keypair,
@@ -88,14 +89,12 @@ pub fn generateVariableSizeEvents(
             .allocator = allocator,
         };
 
-        // Log-distributed size (power law)
         const uniform = random.float(f64);
         const skewed = std.math.pow(f64, uniform, 4.0);
-        const max_size: usize = 100 * 1024; // 100KB max
+        const max_size: usize = 100 * 1024;
         var content_size = @as(usize, @intFromFloat(skewed * @as(f64, @floatFromInt(max_size))));
-        content_size = @max(content_size, 10); // Minimum 10 bytes
+        content_size = @max(content_size, 10);
 
-        // Generate random content
         const content = try allocator.alloc(u8, content_size);
         for (content) |*byte| {
             byte.* = @as(u8, @intCast(random.intRangeAtMost(u8, 32, 126)));
@@ -116,7 +115,6 @@ pub fn generateVariableSizeEvents(
     return events;
 }
 
-/// Generate events that reference each other (for testing graph queries)
 pub fn generateGraphEvents(
     allocator: std.mem.Allocator,
     keypairs: []const nostr.Keypair,
@@ -141,10 +139,8 @@ pub fn generateGraphEvents(
     var event_idx: usize = 0;
 
     for (keypairs, 0..) |*kp, user_idx| {
-        // Generate follow events (kind 3)
         var j: u32 = 0;
         while (j < follows_per_user) : (j += 1) {
-            // Pick a random user to follow (not self)
             var target_idx = random.intRangeAtMost(usize, 0, num_users - 1);
             if (target_idx == user_idx and num_users > 1) {
                 target_idx = (target_idx + 1) % num_users;
@@ -154,7 +150,7 @@ pub fn generateGraphEvents(
                 .id = [_]u8{0} ** 32,
                 .pubkey = [_]u8{0} ** 32,
                 .created_at = base_time + @as(i64, @intCast(event_idx)),
-                .kind = 3, // Contact list
+                .kind = 3,
                 .tags = &[_][]const []const u8{},
                 .content = "",
                 .sig = [_]u8{0} ** 64,

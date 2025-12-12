@@ -70,6 +70,12 @@ pub fn main() !void {
             continue;
         };
         bench.printReport();
+
+        if (config.report_file) |path| {
+            bench.writeJsonReport(path, config.relay_name, config.relay_commit) catch |err| {
+                std.debug.print("Failed to write report: {}\n", .{err});
+            };
+        }
     }
 }
 
@@ -80,6 +86,9 @@ pub const Config = struct {
     duration_secs: u32,
     rate_per_worker: u32,
     report_dir: []const u8,
+    report_file: ?[]const u8 = null,
+    relay_name: ?[]const u8 = null,
+    relay_commit: ?[]const u8 = null,
     relays: []const []const u8 = &[_][]const u8{},
     run_peak_throughput: bool = true,
     run_burst_pattern: bool = true,
@@ -153,6 +162,12 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
             config.run_query = false;
         } else if (std.mem.eql(u8, arg, "--async")) {
             config.async_publish = true;
+        } else if (std.mem.eql(u8, arg, "--report-file")) {
+            config.report_file = args.next() orelse return error.MissingValue;
+        } else if (std.mem.eql(u8, arg, "--relay-name")) {
+            config.relay_name = args.next() orelse return error.MissingValue;
+        } else if (std.mem.eql(u8, arg, "--relay-commit")) {
+            config.relay_commit = args.next() orelse return error.MissingValue;
         }
     }
 
@@ -174,6 +189,9 @@ fn printUsage() void {
         \\    -d, --duration <SECS>   Test duration in seconds (default: 60)
         \\    --rate <N>              Events per second per worker (default: 100)
         \\    --async                 Fire-and-forget mode (don't wait for OK)
+        \\    --report-file <PATH>    Write JSON report to file
+        \\    --relay-name <NAME>     Relay name for report (e.g., "wisp")
+        \\    --relay-commit <HASH>   Relay commit hash for report
         \\
         \\TEST MODES:
         \\    --only-peak             Run only peak throughput test

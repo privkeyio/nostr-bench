@@ -483,6 +483,66 @@ pub const Benchmark = struct {
 
         std.debug.print("└─────────────────────┴───────────┴───────────┴───────────┘\n", .{});
     }
+
+    pub fn writeJsonReport(self: *Benchmark, path: []const u8, relay_name: ?[]const u8, relay_commit: ?[]const u8) !void {
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+
+        var buf: [512]u8 = undefined;
+
+        try file.writeAll("{\n");
+        const url_line = std.fmt.bufPrint(&buf, "  \"relay_url\": \"{s}\",\n", .{self.config.relay_url}) catch return error.BufferTooSmall;
+        try file.writeAll(url_line);
+        if (relay_name) |name| {
+            const name_line = std.fmt.bufPrint(&buf, "  \"relay_name\": \"{s}\",\n", .{name}) catch return error.BufferTooSmall;
+            try file.writeAll(name_line);
+        }
+        if (relay_commit) |commit| {
+            const commit_line = std.fmt.bufPrint(&buf, "  \"relay_commit\": \"{s}\",\n", .{commit}) catch return error.BufferTooSmall;
+            try file.writeAll(commit_line);
+        }
+        const workers_line = std.fmt.bufPrint(&buf, "  \"workers\": {d},\n", .{self.config.workers}) catch return error.BufferTooSmall;
+        try file.writeAll(workers_line);
+        const events_line = std.fmt.bufPrint(&buf, "  \"num_events\": {d},\n", .{self.config.num_events}) catch return error.BufferTooSmall;
+        try file.writeAll(events_line);
+        const async_line = std.fmt.bufPrint(&buf, "  \"async_mode\": {s},\n", .{if (self.config.async_publish) "true" else "false"}) catch return error.BufferTooSmall;
+        try file.writeAll(async_line);
+        try file.writeAll("  \"results\": [\n");
+
+        for (self.results.items, 0..) |result, i| {
+            try file.writeAll("    {\n");
+            const test_line = std.fmt.bufPrint(&buf, "      \"test\": \"{s}\",\n", .{result.test_name}) catch return error.BufferTooSmall;
+            try file.writeAll(test_line);
+            const eps_line = std.fmt.bufPrint(&buf, "      \"events_per_second\": {d:.2},\n", .{result.events_per_second}) catch return error.BufferTooSmall;
+            try file.writeAll(eps_line);
+            const avg_line = std.fmt.bufPrint(&buf, "      \"avg_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.avg_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
+            try file.writeAll(avg_line);
+            const p50_line = std.fmt.bufPrint(&buf, "      \"p50_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p50_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
+            try file.writeAll(p50_line);
+            const p90_line = std.fmt.bufPrint(&buf, "      \"p90_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p90_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
+            try file.writeAll(p90_line);
+            const p95_line = std.fmt.bufPrint(&buf, "      \"p95_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p95_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
+            try file.writeAll(p95_line);
+            const p99_line = std.fmt.bufPrint(&buf, "      \"p99_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p99_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
+            try file.writeAll(p99_line);
+            const sr_line = std.fmt.bufPrint(&buf, "      \"success_rate\": {d:.1},\n", .{result.success_rate}) catch return error.BufferTooSmall;
+            try file.writeAll(sr_line);
+            const te_line = std.fmt.bufPrint(&buf, "      \"total_events\": {d},\n", .{result.total_events}) catch return error.BufferTooSmall;
+            try file.writeAll(te_line);
+            const err_line = std.fmt.bufPrint(&buf, "      \"errors\": {d}\n", .{result.errors}) catch return error.BufferTooSmall;
+            try file.writeAll(err_line);
+            if (i < self.results.items.len - 1) {
+                try file.writeAll("    },\n");
+            } else {
+                try file.writeAll("    }\n");
+            }
+        }
+
+        try file.writeAll("  ]\n");
+        try file.writeAll("}\n");
+
+        std.debug.print("\nReport written to: {s}\n", .{path});
+    }
 };
 
 const SharedStats = struct {

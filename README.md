@@ -1,6 +1,6 @@
 # nostr-bench
 
-A fast Nostr relay benchmarking tool written in Zig.
+Nostr relay benchmark tool written in Zig.
 
 ## Build
 
@@ -11,52 +11,33 @@ zig build -Doptimize=ReleaseFast
 ## Usage
 
 ```bash
-# Basic benchmark
+# Benchmark a relay
 ./zig-out/bin/nostr-bench -r ws://localhost:7777
 
 # Multiple relays
-./zig-out/bin/nostr-bench -r ws://localhost:7777 -r ws://localhost:3334
+./zig-out/bin/nostr-bench -r ws://localhost:7777 -r ws://localhost:7778
 
 # Custom parameters
 ./zig-out/bin/nostr-bench -r ws://localhost:7777 -e 10000 -w 8 --rate 1000
-
-# Async mode (fire-and-forget)
-./zig-out/bin/nostr-bench -r ws://localhost:7777 --async --only-peak
-
-# Generate JSON report
-./zig-out/bin/nostr-bench -r ws://localhost:7777 --report-file results.json --relay-name wisp --relay-commit abc123
 ```
 
 ## Options
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-r, --relay <URL>` | Relay WebSocket URL (repeatable) | - |
-| `-e, --events <N>` | Number of events | 10000 |
-| `-w, --workers <N>` | Worker threads | CPU/4 |
-| `-d, --duration <S>` | Duration in seconds | 60 |
-| `--rate <N>` | Events/sec per worker | 100 |
-| `--async` | Fire-and-forget mode | false |
-| `--report-file <PATH>` | Write JSON report to file | - |
-| `--relay-name <NAME>` | Relay name for report | - |
-| `--relay-commit <HASH>` | Relay commit hash for report | - |
-
-## Test Modes
-
-Run specific tests only:
-
-| Flag | Test |
-|------|------|
-| `--only-peak` | Peak throughput |
-| `--only-burst` | Burst pattern |
-| `--only-mixed` | Mixed read/write |
-| `--only-query` | Query performance |
-| `--only-concurrent` | Concurrent query/store |
-
-## Benchmark Results
-
-See [benchmark/reports/BENCHMARK_RESULTS.md](benchmark/reports/BENCHMARK_RESULTS.md) for comparison data.
+```
+-r, --relay <URL>       Relay WebSocket URL (can specify multiple)
+-e, --events <N>        Number of events (default: 10000)
+-w, --workers <N>       Concurrent workers (default: CPU/4)
+-d, --duration <S>      Duration in seconds (default: 60)
+--rate <N>              Events/sec per worker (default: 100)
+--async                 Fire-and-forget mode
+--report-file <PATH>    Write JSON report
+--only-peak             Run only peak throughput test
+--only-burst            Run only burst pattern test
+--only-mixed            Run only mixed read/write test
+--only-query            Run only query performance test
+--only-concurrent       Run only concurrent query/store test
+```
 
 ## License
 
-LGPL v2.1 - See [LICENSE](LICENSE)
+LGPL v2.1

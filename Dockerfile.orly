@@ -1,0 +1,47 @@
+# Dockerfile for next.orly.dev relay (Go-based with Badger)
+# Fetches latest tag from git repository
+
+FROM golang:1.24-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends git make && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Clone the repository and checkout the latest tag
+RUN git clone https://git.nostrdev.com/mleku/next.orly.dev.git . && \
+    LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "main") && \
+    echo "Building ORLY version: ${LATEST_TAG}" && \
+    git checkout "${LATEST_TAG}"
+
+# Remove local replace directives and update dependencies
+# Enable GOTOOLCHAIN=auto to download required Go version
+RUN sed -i '/^replace .* => \/home/d' go.mod && \
+    GOTOOLCHAIN=auto go mod tidy && \
+    go mod download
+
+# Build the relay with CGO disabled (uses purego for crypto)
+RUN GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o relay .
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl libsecp256k1-1 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /build/relay /app/relay
+
+RUN mkdir -p /data && chmod 777 /data
+
+EXPOSE 8080
+
+ENV ORLY_DATA_DIR=/data
+ENV ORLY_LISTEN=0.0.0.0
+ENV ORLY_PORT=8080
+ENV ORLY_LOG_LEVEL=off
+ENV ORLY_DB_TYPE=badger
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
+    CMD curl -f http://localhost:8080/ || exit 1
+
+CMD ["/app/relay"]

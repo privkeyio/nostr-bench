@@ -1,0 +1,32 @@
+# Dockerfile for fiatjaf's relayer with SQLite
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates gcc musl-dev
+
+WORKDIR /build
+
+# Clone relayer
+RUN git clone https://github.com/fiatjaf/relayer.git .
+
+# Build the basic example (uses SQLite)
+WORKDIR /build/examples/basic
+RUN go mod tidy && \
+    CGO_ENABLED=1 go build -o relayer-basic .
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates sqlite curl
+
+WORKDIR /app
+COPY --from=builder /build/examples/basic/relayer-basic /app/relayer-basic
+
+RUN mkdir -p /data && chmod 777 /data
+
+EXPOSE 7447
+
+ENV DATABASE_PATH=/data/relayer.db
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=5 \
+    CMD curl -f http://localhost:7447/ || exit 1
+
+CMD ["/app/relayer-basic"]

@@ -1,0 +1,19 @@
+# Dockerfile for strfry relay (C++ with LMDB)
+# Uses official strfry image for simplicity
+FROM ghcr.io/hoytech/strfry:latest
+
+# Create data directory
+RUN mkdir -p /data/strfry-db
+
+# Copy config (will be mounted)
+COPY configs/strfry.conf /etc/strfry.conf
+
+EXPOSE 7777
+
+ENV STRFRY_DB=/data/strfry-db
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
+    CMD wget --quiet --tries=1 --spider http://127.0.0.1:7777 || exit 1
+
+ENTRYPOINT ["/app/strfry"]
+CMD ["relay"]

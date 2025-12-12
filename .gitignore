@@ -20,3 +20,6 @@ Thumbs.db
 # Runtime data
 /data/
 /data-lock
+
+# External relay sources (cloned by setup.sh)
+/external/

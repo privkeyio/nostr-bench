@@ -1,0 +1,32 @@
+# Dockerfile for Khatru relay with SQLite backend
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates sqlite-dev gcc musl-dev
+
+WORKDIR /build
+
+# Clone khatru
+RUN git clone https://github.com/fiatjaf/khatru.git .
+
+# Build the basic-sqlite example
+WORKDIR /build/examples/basic-sqlite
+RUN go mod tidy && \
+    CGO_ENABLED=1 go build -o khatru-sqlite .
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates sqlite curl
+
+WORKDIR /app
+COPY --from=builder /build/examples/basic-sqlite/khatru-sqlite /app/khatru-sqlite
+
+RUN mkdir -p /data && chmod 777 /data
+
+EXPOSE 3334
+
+ENV DATABASE_PATH=/data/khatru.db
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=5 \
+    CMD curl -f http://localhost:3334/ || exit 1
+
+CMD ["/app/khatru-sqlite"]

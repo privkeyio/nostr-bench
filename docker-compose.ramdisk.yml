@@ -1,0 +1,35 @@
+version: "3.8"
+
+# Override file for ramdisk-based benchmarking
+# Use with: docker compose -f docker-compose.yml -f docker-compose.ramdisk.yml up
+
+services:
+  wisp:
+    volumes:
+      - /dev/shm/nostr-bench/wisp:/data
+
+  orly:
+    volumes:
+      - /dev/shm/nostr-bench/orly:/data
+
+  strfry:
+    volumes:
+      - /dev/shm/nostr-bench/strfry:/data
+      - ./configs/strfry.conf:/etc/strfry.conf
+
+  nostr-rs-relay:
+    volumes:
+      - /dev/shm/nostr-bench/nostr-rs-relay:/data
+      - ./configs/nostr-rs-relay.toml:/app/config.toml
+
+  khatru-sqlite:
+    volumes:
+      - /dev/shm/nostr-bench/khatru-sqlite:/data
+
+  khatru-lmdb:
+    volumes:
+      - /dev/shm/nostr-bench/khatru-lmdb:/data
+
+  relayer:
+    volumes:
+      - /dev/shm/nostr-bench/relayer:/data

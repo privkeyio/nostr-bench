@@ -1,0 +1,36 @@
+# Dockerfile for nostr-bench (Zig-based benchmark tool)
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    xz-utils \
+    ca-certificates \
+    git \
+    libsecp256k1-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Zig 0.15.2
+RUN curl -L https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ -C /opt
+ENV PATH="/opt/zig-x86_64-linux-0.15.2:$PATH"
+
+WORKDIR /app
+
+# Clone nostr-bench from GitHub
+RUN git clone --depth 1 https://github.com/privkeyio/nostr-bench.git .
+
+RUN zig build -Doptimize=ReleaseFast
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/zig-out/bin/nostr-bench /usr/local/bin/nostr-bench
+
+RUN mkdir -p /reports && chmod 777 /reports
+
+ENTRYPOINT ["nostr-bench"]

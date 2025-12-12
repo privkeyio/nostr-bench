@@ -1,66 +1,258 @@
-services:
-  orly:
-    build:
-      context: ../next.orly.dev
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    volumes:
-      - orly-data:/data
-    environment:
-      - ORLY_PORT=8080
-      - ORLY_DATA_DIR=/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - benchmark
+version: "3.8"
 
+# Comprehensive Nostr Relay Benchmark Suite
+# Tests: wisp, orly, strfry, nostr-rs-relay, khatru-sqlite, khatru-lmdb, relayer
+
+services:
+  # ============================================================================
+  # WISP - Zig-based relay with LMDB
+  # ============================================================================
   wisp:
     build:
-      context: ../wisp
-      dockerfile: Dockerfile
-    ports:
-      - "7777:7777"
-    volumes:
-      - wisp-data:/data
+      context: .
+      dockerfile: Dockerfile.wisp
+    container_name: bench-wisp
     environment:
       - WISP_HOST=0.0.0.0
       - WISP_PORT=7777
-      - WISP_STORAGE_PATH=/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7777"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - WISP_STORAGE_PATH=/tmp/data
+    tmpfs:
+      - /tmp/data:size=1G
+    ports:
+      - "8001:7777"
     networks:
-      - benchmark
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7777/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
+  # ============================================================================
+  # ORLY - Go-based relay with Badger
+  # ============================================================================
+  orly:
+    build:
+      context: .
+      dockerfile: Dockerfile.orly
+    container_name: bench-orly
+    environment:
+      - ORLY_DATA_DIR=/data
+      - ORLY_LISTEN=0.0.0.0
+      - ORLY_PORT=8080
+      - ORLY_LOG_LEVEL=off
+      - ORLY_DB_TYPE=badger
+    volumes:
+      - ./data/orly:/data
+    ports:
+      - "8002:8080"
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ============================================================================
+  # STRFRY - C++ relay with LMDB (fastest known relay)
+  # ============================================================================
+  strfry:
+    image: ghcr.io/hoytech/strfry:latest
+    container_name: bench-strfry
+    volumes:
+      - ./data/strfry:/data
+      - ./configs/strfry.conf:/etc/strfry.conf
+    ports:
+      - "8003:7777"
+    networks:
+      - benchmark-net
+    entrypoint: /bin/sh
+    command: -c "mkdir -p /data/strfry-db && exec /app/strfry relay"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:7777"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ============================================================================
+  # NOSTR-RS-RELAY - Rust relay with SQLite
+  # ============================================================================
+  nostr-rs-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile.nostr-rs-relay
+    container_name: bench-nostr-rs-relay
+    environment:
+      - RUST_LOG=warn
+    volumes:
+      - ./data/nostr-rs-relay:/data
+      - ./configs/nostr-rs-relay.toml:/app/config.toml
+    ports:
+      - "8004:8080"
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================================
+  # KHATRU-SQLITE - Go/fiatjaf relay with SQLite
+  # ============================================================================
+  khatru-sqlite:
+    build:
+      context: .
+      dockerfile: Dockerfile.khatru-sqlite
+    container_name: bench-khatru-sqlite
+    environment:
+      - DATABASE_PATH=/data/khatru.db
+    volumes:
+      - ./data/khatru-sqlite:/data
+    ports:
+      - "8005:3334"
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3334/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ============================================================================
+  # KHATRU-LMDB - Go/fiatjaf relay with LMDB
+  # ============================================================================
+  khatru-lmdb:
+    build:
+      context: .
+      dockerfile: Dockerfile.khatru-lmdb
+    container_name: bench-khatru-lmdb
+    environment:
+      - DATABASE_PATH=/data/lmdb
+    volumes:
+      - ./data/khatru-lmdb:/data
+    ports:
+      - "8006:3334"
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3334/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ============================================================================
+  # RELAYER - Go/fiatjaf basic relay with SQLite
+  # ============================================================================
+  relayer:
+    build:
+      context: .
+      dockerfile: Dockerfile.relayer
+    container_name: bench-relayer
+    environment:
+      - DATABASE_PATH=/data/relayer.db
+    volumes:
+      - ./data/relayer:/data
+    ports:
+      - "8007:7447"
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7447/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ============================================================================
+  # BENCHMARK RUNNER - nostr-bench
+  # ============================================================================
   benchmark:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.nostr-bench
+    container_name: bench-runner
     depends_on:
-      orly:
-        condition: service_healthy
       wisp:
         condition: service_healthy
+      orly:
+        condition: service_healthy
+      strfry:
+        condition: service_healthy
+      nostr-rs-relay:
+        condition: service_healthy
+      khatru-sqlite:
+        condition: service_healthy
+      khatru-lmdb:
+        condition: service_healthy
+      relayer:
+        condition: service_healthy
     environment:
-      - BENCHMARK_RELAYS=orly,wisp
-      - BENCHMARK_EVENTS=10000
-      - BENCHMARK_WORKERS=4
+      - BENCHMARK_EVENTS=${BENCHMARK_EVENTS:-10000}
+      - BENCHMARK_WORKERS=${BENCHMARK_WORKERS:-8}
+      - BENCHMARK_DURATION=${BENCHMARK_DURATION:-60}
+      - BENCHMARK_RATE=${BENCHMARK_RATE:-1000}
     volumes:
       - ./reports:/reports
     networks:
-      - benchmark
-    command: ["--relays", "orly,wisp", "-e", "10000", "-w", "4"]
+      - benchmark-net
+    entrypoint: /bin/sh
+    command: >
+      -c "
+        echo '=============================================='
+        echo '  NOSTR RELAY BENCHMARK SUITE'
+        echo '=============================================='
+        echo ''
+        echo 'Waiting for all relays to stabilize...'
+        sleep 10
 
-volumes:
-  orly-data:
-  wisp-data:
+        EVENTS=$${BENCHMARK_EVENTS:-10000}
+        WORKERS=$${BENCHMARK_WORKERS:-8}
+        DURATION=$${BENCHMARK_DURATION:-60}
+        RATE=$${BENCHMARK_RATE:-1000}
+
+        echo \"Events: $$EVENTS, Workers: $$WORKERS, Duration: $${DURATION}s, Rate: $$RATE/s\"
+        echo ''
+
+        for relay in wisp:7777 orly:8080 strfry:7777 nostr-rs-relay:8080 khatru-sqlite:3334 khatru-lmdb:3334 relayer:7447; do
+          NAME=$$(echo $$relay | cut -d: -f1)
+          PORT=$$(echo $$relay | cut -d: -f2)
+          TIMESTAMP=$$(date +%Y%m%d_%H%M%S)
+          REPORT_FILE=\"/reports/$${NAME}_$${TIMESTAMP}.json\"
+
+          echo ''
+          echo '=============================================='
+          echo \"  Benchmarking: $$NAME\"
+          echo '=============================================='
+
+          nostr-bench \
+            --relay ws://$${relay} \
+            --events $$EVENTS \
+            --workers $$WORKERS \
+            --duration $$DURATION \
+            --rate $$RATE \
+            --report-file \"$$REPORT_FILE\" \
+            --relay-name \"$$NAME\" || echo \"Warning: $$NAME benchmark had issues\"
+
+          echo \"Report saved: $$REPORT_FILE\"
+          sleep 5
+        done
+
+        echo ''
+        echo '=============================================='
+        echo '  BENCHMARK COMPLETE'
+        echo '=============================================='
+        echo 'Reports saved to ./reports/'
+        ls -la /reports/
+      "
 
 networks:
-  benchmark:
+  benchmark-net:
     driver: bridge

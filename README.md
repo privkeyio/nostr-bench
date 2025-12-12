@@ -27,4 +27,4 @@ zig build
 
 ## License
 
-MIT
+LGPL v2.1 - See [LICENSE](LICENSE)

@@ -58,6 +58,8 @@ pub fn main() !void {
             .run_burst_pattern = config.run_burst_pattern,
             .run_mixed_rw = config.run_mixed_rw,
             .run_query = config.run_query,
+            .run_concurrent_rw = config.run_concurrent_rw,
+            .async_publish = config.async_publish,
         };
 
         var bench = try benchmark.Benchmark.init(allocator, bench_config);
@@ -83,6 +85,8 @@ pub const Config = struct {
     run_burst_pattern: bool = true,
     run_mixed_rw: bool = true,
     run_query: bool = true,
+    run_concurrent_rw: bool = true,
+    async_publish: bool = false,
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !Config {
@@ -126,18 +130,29 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
             config.run_burst_pattern = false;
             config.run_mixed_rw = false;
             config.run_query = false;
+            config.run_concurrent_rw = false;
         } else if (std.mem.eql(u8, arg, "--only-burst")) {
             config.run_peak_throughput = false;
             config.run_mixed_rw = false;
             config.run_query = false;
+            config.run_concurrent_rw = false;
         } else if (std.mem.eql(u8, arg, "--only-mixed")) {
             config.run_peak_throughput = false;
             config.run_burst_pattern = false;
             config.run_query = false;
+            config.run_concurrent_rw = false;
         } else if (std.mem.eql(u8, arg, "--only-query")) {
             config.run_peak_throughput = false;
             config.run_burst_pattern = false;
             config.run_mixed_rw = false;
+            config.run_concurrent_rw = false;
+        } else if (std.mem.eql(u8, arg, "--only-concurrent")) {
+            config.run_peak_throughput = false;
+            config.run_burst_pattern = false;
+            config.run_mixed_rw = false;
+            config.run_query = false;
+        } else if (std.mem.eql(u8, arg, "--async")) {
+            config.async_publish = true;
         }
     }
 
@@ -158,17 +173,18 @@ fn printUsage() void {
         \\    -e, --events <N>        Number of events to generate (default: 10000)
         \\    -d, --duration <SECS>   Test duration in seconds (default: 60)
         \\    --rate <N>              Events per second per worker (default: 100)
+        \\    --async                 Fire-and-forget mode (don't wait for OK)
         \\
         \\TEST MODES:
         \\    --only-peak             Run only peak throughput test
         \\    --only-burst            Run only burst pattern test
         \\    --only-mixed            Run only mixed read/write test
         \\    --only-query            Run only query performance test
+        \\    --only-concurrent       Run only concurrent query/store test
         \\
         \\EXAMPLES:
-        \\    nostr-bench -r ws://localhost:3334
-        \\    nostr-bench -r ws://localhost:3334 -r ws://localhost:7777
-        \\    nostr-bench -r ws://localhost:3334 -e 5000 -w 8
+        \\    nostr-bench -r ws://localhost:7777 -e 10000 -w 8 --rate 1000
+        \\    nostr-bench -r ws://localhost:7777 --async --only-peak
         \\
     ;
     std.debug.print("{s}", .{usage});

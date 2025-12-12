@@ -52,6 +52,12 @@ pub const Benchmark = struct {
             const result = try self.runQueryTest();
             try self.results.append(self.allocator, result);
         }
+
+        if (self.config.run_concurrent_rw) {
+            std.debug.print("\nRunning Concurrent Query/Store Test...\n", .{});
+            const result = try self.runConcurrentQueryStoreTest();
+            try self.results.append(self.allocator, result);
+        }
     }
 
     fn runPeakThroughputTest(self: *Benchmark) !BenchmarkResult {
@@ -68,7 +74,6 @@ pub const Benchmark = struct {
 
         stats.recordStart();
 
-        // Run workers in parallel
         const threads = try self.allocator.alloc(std.Thread, self.config.workers);
         defer self.allocator.free(threads);
 
@@ -84,13 +89,22 @@ pub const Benchmark = struct {
             const end_idx = if (i == self.config.workers - 1) events.len else start_idx + events_per_worker;
             const worker_events = events[start_idx..end_idx];
 
-            thread.* = try std.Thread.spawn(.{}, workerThread, .{
-                self.config.relay_url,
-                worker_events,
-                &shared_stats,
-                self.config.rate_per_worker,
-                self.allocator,
-            });
+            if (self.config.async_publish) {
+                thread.* = try std.Thread.spawn(.{}, asyncWorkerThread, .{
+                    self.config.relay_url,
+                    worker_events,
+                    &shared_stats,
+                    self.config.rate_per_worker,
+                });
+            } else {
+                thread.* = try std.Thread.spawn(.{}, workerThread, .{
+                    self.config.relay_url,
+                    worker_events,
+                    &shared_stats,
+                    self.config.rate_per_worker,
+                    self.allocator,
+                });
+            }
         }
 
         for (threads) |thread| {
@@ -99,7 +113,8 @@ pub const Benchmark = struct {
 
         stats.recordEnd();
 
-        return BenchmarkResult.fromStats(&stats, "Peak Throughput", self.config.workers);
+        const name = if (self.config.async_publish) "Peak Throughput (async)" else "Peak Throughput";
+        return BenchmarkResult.fromStats(&stats, name, self.config.workers);
     }
 
     fn runBurstPatternTest(self: *Benchmark) !BenchmarkResult {
@@ -352,6 +367,87 @@ pub const Benchmark = struct {
         return BenchmarkResult.fromStats(&stats, "Query Performance", 1);
     }
 
+    fn runConcurrentQueryStoreTest(self: *Benchmark) !BenchmarkResult {
+        var stats = Stats.init(self.allocator);
+        defer stats.deinit();
+
+        const num_events = self.config.num_events / 2;
+        const events = try event_gen.generateEvents(self.allocator, &self.keypair, num_events);
+        defer {
+            for (events) |*ev| {
+                ev.deinit();
+            }
+            self.allocator.free(events);
+        }
+
+        const seed_events = try event_gen.generateEvents(self.allocator, &self.keypair, 1000);
+        defer {
+            for (seed_events) |*ev| {
+                ev.deinit();
+            }
+            self.allocator.free(seed_events);
+        }
+
+        var seed_client = try websocket.Client.init(self.allocator, self.config.relay_url);
+        defer seed_client.deinit();
+        seed_client.connect() catch {
+            stats.recordEnd();
+            return BenchmarkResult.fromStats(&stats, "Concurrent Query/Store", self.config.workers);
+        };
+
+        for (seed_events) |*ev| {
+            seed_client.sendEvent(ev) catch continue;
+            _ = seed_client.receive() catch continue;
+        }
+
+        stats.recordStart();
+
+        const num_writers = self.config.workers / 2;
+        const num_readers = self.config.workers - num_writers;
+        const total_threads = num_writers + num_readers;
+
+        const threads = try self.allocator.alloc(std.Thread, total_threads);
+        defer self.allocator.free(threads);
+
+        var shared_stats = SharedStats{
+            .stats = &stats,
+            .mu = .{},
+        };
+
+        const events_per_writer = if (num_writers > 0) events.len / num_writers else 0;
+
+        for (0..num_writers) |i| {
+            const start_idx = i * events_per_writer;
+            const end_idx = if (i == num_writers - 1) events.len else start_idx + events_per_writer;
+            const worker_events = events[start_idx..end_idx];
+
+            threads[i] = try std.Thread.spawn(.{}, workerThread, .{
+                self.config.relay_url,
+                worker_events,
+                &shared_stats,
+                self.config.rate_per_worker,
+                self.allocator,
+            });
+        }
+
+        for (num_writers..total_threads) |i| {
+            threads[i] = try std.Thread.spawn(.{}, queryWorkerThread, .{
+                self.config.relay_url,
+                self.config.num_events / 4,
+                &shared_stats,
+                self.allocator,
+            });
+        }
+
+        for (threads) |thread| {
+            thread.join();
+        }
+
+        stats.recordEnd();
+
+        return BenchmarkResult.fromStats(&stats, "Concurrent Query/Store", self.config.workers);
+    }
+
     pub fn printReport(self: *Benchmark) void {
         std.debug.print("\n", .{});
         std.debug.print("════════════════════════════════════════════════════════════\n", .{});
@@ -455,5 +551,98 @@ fn workerThread(
             shared.stats.recordError();
             shared.mu.unlock();
         }
+    }
+}
+
+fn queryWorkerThread(
+    relay_url: []const u8,
+    num_queries: u32,
+    shared: *SharedStats,
+    allocator: std.mem.Allocator,
+) void {
+    var client = websocket.Client.init(std.heap.page_allocator, relay_url) catch return;
+    defer client.deinit();
+
+    client.connect() catch return;
+
+    const query_types = [_]nostr.Filter{
+        .{ .kinds = &[_]i32{1}, .limit = 100 },
+        .{ .kinds = &[_]i32{ 1, 6 }, .limit = 50 },
+        .{ .limit = 10 },
+    };
+
+    var query_count: u32 = 0;
+    while (query_count < num_queries) : (query_count += 1) {
+        const filter = query_types[query_count % query_types.len];
+        const filters = [_]nostr.Filter{filter};
+
+        const start_ns = std.time.nanoTimestamp();
+
+        var sub_buf: [32]u8 = undefined;
+        const sub_id = std.fmt.bufPrint(&sub_buf, "q{d}", .{query_count}) catch "q0";
+
+        client.sendReq(sub_id, &filters) catch {
+            shared.mu.lock();
+            shared.stats.recordError();
+            shared.mu.unlock();
+            continue;
+        };
+
+        var received_eose = false;
+        while (!received_eose) {
+            if (client.receive()) |response| {
+                if (response) |data| {
+                    const msg = nostr.RelayMsg.parse(data, allocator) catch continue;
+                    if (msg.msg_type == .eose) {
+                        received_eose = true;
+                    }
+                } else {
+                    break;
+                }
+            } else |_| {
+                break;
+            }
+        }
+
+        client.sendClose(sub_id) catch {};
+
+        const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+        shared.mu.lock();
+        shared.stats.recordSuccess(latency) catch {};
+        shared.mu.unlock();
+
+        std.Thread.sleep(1_000_000);
+    }
+}
+
+fn asyncWorkerThread(
+    relay_url: []const u8,
+    events: []const nostr.Event,
+    shared: *SharedStats,
+    rate_per_sec: u32,
+) void {
+    var client = websocket.Client.init(std.heap.page_allocator, relay_url) catch return;
+    defer client.deinit();
+
+    client.connect() catch return;
+
+    var rate_limiter = RateLimiter.init(rate_per_sec);
+
+    for (events) |*ev| {
+        rate_limiter.wait();
+
+        const start_ns = std.time.nanoTimestamp();
+
+        client.sendEvent(ev) catch {
+            shared.mu.lock();
+            shared.stats.recordError();
+            shared.mu.unlock();
+            continue;
+        };
+
+        const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+        shared.mu.lock();
+        shared.stats.recordSuccess(latency) catch {};
+        shared.mu.unlock();
     }
 }

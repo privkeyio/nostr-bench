@@ -1,7 +1,7 @@
 version: "3.8"
 
 # Comprehensive Nostr Relay Benchmark Suite
-# Tests: wisp, orly, strfry, nostr-rs-relay, khatru-sqlite, khatru-lmdb, relayer
+# Tests: wisp, orly, strfry, nostr-rs-relay, khatru-sqlite, khatru-lmdb
 
 services:
   # ============================================================================
@@ -15,9 +15,9 @@ services:
     environment:
       - WISP_HOST=0.0.0.0
       - WISP_PORT=7777
-      - WISP_STORAGE_PATH=/tmp/data
-    tmpfs:
-      - /tmp/data:size=1G
+      - WISP_STORAGE_PATH=/data/wisp.lmdb
+    volumes:
+      - ./data/wisp:/data
     ports:
       - "8001:7777"
     networks:
@@ -87,7 +87,7 @@ services:
       dockerfile: Dockerfile.nostr-rs-relay
     container_name: bench-nostr-rs-relay
     environment:
-      - RUST_LOG=warn
+      - RUST_LOG=info,nostr_rs_relay=debug
     volumes:
       - ./data/nostr-rs-relay:/data
       - ./configs/nostr-rs-relay.toml:/app/config.toml
@@ -119,7 +119,7 @@ services:
     networks:
       - benchmark-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3334/"]
+      test: ["CMD-SHELL", "curl -s http://localhost:3334/ || exit 0"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -142,20 +142,24 @@ services:
     networks:
       - benchmark-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3334/"]
+      test: ["CMD-SHELL", "curl -s http://localhost:3334/ || exit 0"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 10s
 
   # ============================================================================
-  # RELAYER - Go/fiatjaf basic relay with SQLite
+  # RELAYER - Go/fiatjaf basic relay (DISABLED - requires PostgreSQL)
   # ============================================================================
+  # Note: The basic example in fiatjaf/relayer uses PostgreSQL, not SQLite.
+  # To enable: set up PostgreSQL and update the profile.
   relayer:
     build:
       context: .
       dockerfile: Dockerfile.relayer
     container_name: bench-relayer
+    profiles:
+      - disabled  # Exclude from default benchmark run
     environment:
       - DATABASE_PATH=/data/relayer.db
     volumes:
@@ -192,8 +196,6 @@ services:
         condition: service_healthy
       khatru-lmdb:
         condition: service_healthy
-      relayer:
-        condition: service_healthy
     environment:
       - BENCHMARK_EVENTS=${BENCHMARK_EVENTS:-10000}
       - BENCHMARK_WORKERS=${BENCHMARK_WORKERS:-8}
@@ -221,7 +223,7 @@ services:
         echo \"Events: $$EVENTS, Workers: $$WORKERS, Duration: $${DURATION}s, Rate: $$RATE/s\"
         echo ''
 
-        for relay in wisp:7777 orly:8080 strfry:7777 nostr-rs-relay:8080 khatru-sqlite:3334 khatru-lmdb:3334 relayer:7447; do
+        for relay in wisp:7777 orly:8080 strfry:7777 nostr-rs-relay:8080 khatru-sqlite:3334 khatru-lmdb:3334; do
           NAME=$$(echo $$relay | cut -d: -f1)
           PORT=$$(echo $$relay | cut -d: -f2)
           TIMESTAMP=$$(date +%Y%m%d_%H%M%S)
@@ -232,14 +234,7 @@ services:
           echo \"  Benchmarking: $$NAME\"
           echo '=============================================='
 
-          nostr-bench \
-            --relay ws://$${relay} \
-            --events $$EVENTS \
-            --workers $$WORKERS \
-            --duration $$DURATION \
-            --rate $$RATE \
-            --report-file \"$$REPORT_FILE\" \
-            --relay-name \"$$NAME\" || echo \"Warning: $$NAME benchmark had issues\"
+          nostr-bench --relay ws://$${relay} --events $$EVENTS --workers $$WORKERS --duration $$DURATION --rate $$RATE --report-file \"$$REPORT_FILE\" --relay-name \"$$NAME\" || echo \"Warning: $$NAME benchmark had issues\"
 
           echo \"Report saved: $$REPORT_FILE\"
           sleep 5

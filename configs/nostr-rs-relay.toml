@@ -24,7 +24,9 @@ broadcast_buffer = 16384
 event_persist_buffer = 4096
 
 [authorization]
-pubkey_whitelist = []
+# Empty whitelist means anyone can publish (open relay)
+# If you want to restrict, add pubkeys here
+# pubkey_whitelist = ["hex_pubkey_here"]
 
 [verified_users]
 mode = "passive"

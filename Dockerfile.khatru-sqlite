@@ -8,8 +8,8 @@ WORKDIR /build
 # Clone khatru
 RUN git clone https://github.com/fiatjaf/khatru.git .
 
-# Build the basic-sqlite example
-WORKDIR /build/examples/basic-sqlite
+# Build the basic-sqlite3 example
+WORKDIR /build/examples/basic-sqlite3
 RUN go mod tidy && \
     CGO_ENABLED=1 go build -o khatru-sqlite .
 
@@ -18,7 +18,7 @@ FROM alpine:latest
 RUN apk --no-cache add ca-certificates sqlite curl
 
 WORKDIR /app
-COPY --from=builder /build/examples/basic-sqlite/khatru-sqlite /app/khatru-sqlite
+COPY --from=builder /build/examples/basic-sqlite3/khatru-sqlite /app/khatru-sqlite
 
 RUN mkdir -p /data && chmod 777 /data
 

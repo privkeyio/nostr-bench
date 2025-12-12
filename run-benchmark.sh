@@ -23,8 +23,8 @@ BENCHMARK_WORKERS="${BENCHMARK_WORKERS:-8}"
 BENCHMARK_DURATION="${BENCHMARK_DURATION:-60}"
 BENCHMARK_RATE="${BENCHMARK_RATE:-1000}"
 
-# All available relays
-ALL_RELAYS="wisp,orly,strfry,nostr-rs-relay,khatru-sqlite,khatru-lmdb,relayer"
+# All available relays (relayer excluded - requires PostgreSQL)
+ALL_RELAYS="wisp,orly,strfry,nostr-rs-relay,khatru-sqlite,khatru-lmdb"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -66,7 +66,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --relays <list>    Comma-separated list of relays to test"
-            echo "                     Available: wisp,orly,strfry,nostr-rs-relay,khatru-sqlite,khatru-lmdb,relayer"
+            echo "                     Available: wisp,orly,strfry,nostr-rs-relay,khatru-sqlite,khatru-lmdb"
             echo "  --ramdisk          Use /dev/shm for relay data (faster, requires 8GB+ RAM)"
             echo "  --quick            Quick test mode (1000 events, 30s duration)"
             echo "  --events <n>       Number of events per test (default: 10000)"
@@ -153,7 +153,7 @@ else
 fi
 
 # Create data directories
-mkdir -p "${DATA_BASE}"/{wisp,orly,strfry,nostr-rs-relay,khatru-sqlite,khatru-lmdb,relayer}
+mkdir -p "${DATA_BASE}"/{wisp,orly,strfry,nostr-rs-relay,khatru-sqlite,khatru-lmdb}
 chmod -R 777 "${DATA_BASE}" 2>/dev/null || true
 
 # Create reports directory

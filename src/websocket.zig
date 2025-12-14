@@ -79,6 +79,15 @@ pub const Client = struct {
         self.connected = true;
     }
 
+    pub fn setReadTimeout(self: *Client, timeout_ms: u32) void {
+        const stream = self.stream orelse return;
+        const timeout = std.posix.timeval{
+            .sec = @intCast(timeout_ms / 1000),
+            .usec = @intCast((timeout_ms % 1000) * 1000),
+        };
+        std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+    }
+
     fn performHandshake(self: *Client) !void {
         const stream = self.stream orelse return error.ConnectionFailed;
 

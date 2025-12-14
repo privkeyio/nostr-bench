@@ -211,7 +211,7 @@ pub const RateLimiter = struct {
     mu: std.Thread.Mutex,
 
     pub fn init(events_per_second: u32) RateLimiter {
-        const interval = @divTrunc(@as(i64, 1_000_000_000), @as(i64, @intCast(events_per_second)));
+        const interval = if (events_per_second == 0) 0 else @divTrunc(@as(i64, 1_000_000_000), @as(i64, @intCast(events_per_second)));
         return .{
             .interval_ns = interval,
             .last_event_ns = @intCast(std.time.nanoTimestamp()),
@@ -220,6 +220,8 @@ pub const RateLimiter = struct {
     }
 
     pub fn wait(self: *RateLimiter) void {
+        if (self.interval_ns == 0) return;
+
         self.mu.lock();
         defer self.mu.unlock();
 

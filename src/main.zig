@@ -44,7 +44,11 @@ pub fn main() !void {
         std.debug.print("Workers: {d}\n", .{config.workers});
         std.debug.print("Events: {d}\n", .{config.num_events});
         std.debug.print("Duration: {d}s\n", .{config.duration_secs});
-        std.debug.print("Rate limit: {d} events/sec per worker\n", .{config.rate_per_worker});
+        if (config.rate_per_worker == 0) {
+            std.debug.print("Rate limit: unlimited\n", .{});
+        } else {
+            std.debug.print("Rate limit: {d} events/sec per worker\n", .{config.rate_per_worker});
+        }
         std.debug.print("────────────────────────────────────────────────────────────\n", .{});
 
         const bench_config = Config{
@@ -110,7 +114,7 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
         .workers = @intCast(@max(2, (std.Thread.getCpuCount() catch 4) / 4)),
         .num_events = 10000,
         .duration_secs = 60,
-        .rate_per_worker = 100,
+        .rate_per_worker = 1000,
         .report_dir = "/tmp/benchmark_reports",
         .relays = &[_][]const u8{},
     };
@@ -187,7 +191,7 @@ fn printUsage() void {
         \\    -w, --workers <N>       Number of concurrent workers (default: CPU/4)
         \\    -e, --events <N>        Number of events to generate (default: 10000)
         \\    -d, --duration <SECS>   Test duration in seconds (default: 60)
-        \\    --rate <N>              Events per second per worker (default: 100)
+        \\    --rate <N>              Events per second per worker (default: 1000, 0 = unlimited)
         \\    --async                 Fire-and-forget mode (don't wait for OK)
         \\    --report-file <PATH>    Write JSON report to file
         \\    --relay-name <NAME>     Relay name for report (e.g., "wisp")

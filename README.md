@@ -28,7 +28,7 @@ zig build -Doptimize=ReleaseFast
 -e, --events <N>        Number of events (default: 10000)
 -w, --workers <N>       Concurrent workers (default: CPU/4)
 -d, --duration <S>      Duration in seconds (default: 60)
---rate <N>              Events/sec per worker (default: 100)
+--rate <N>              Events/sec per worker (default: 1000, 0 = unlimited)
 --async                 Fire-and-forget mode
 --report-file <PATH>    Write JSON report
 --only-peak             Run only peak throughput test

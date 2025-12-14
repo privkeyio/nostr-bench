@@ -144,6 +144,7 @@ pub const Benchmark = struct {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Burst Pattern", self.config.workers);
         };
+        client.setReadTimeout(5000);
 
         while (event_idx < events.len) {
             // Burst
@@ -208,6 +209,7 @@ pub const Benchmark = struct {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Mixed Read/Write", self.config.workers);
         };
+        client.setReadTimeout(5000);
 
         var rate_limiter = RateLimiter.init(self.config.rate_per_worker);
 
@@ -303,6 +305,7 @@ pub const Benchmark = struct {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Query Performance", self.config.workers);
         };
+        client.setReadTimeout(5000);
 
         // Seed the relay
         for (seed_events) |*ev| {
@@ -394,6 +397,7 @@ pub const Benchmark = struct {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Concurrent Query/Store", self.config.workers);
         };
+        seed_client.setReadTimeout(5000);
 
         for (seed_events) |*ev| {
             seed_client.sendEvent(ev) catch continue;
@@ -562,6 +566,7 @@ fn workerThread(
     defer client.deinit();
 
     client.connect() catch return;
+    client.setReadTimeout(5000);
 
     var rate_limiter = RateLimiter.init(rate_per_sec);
 
@@ -624,6 +629,7 @@ fn queryWorkerThread(
     defer client.deinit();
 
     client.connect() catch return;
+    client.setReadTimeout(5000);
 
     const query_types = [_]nostr.Filter{
         .{ .kinds = &[_]i32{1}, .limit = 100 },

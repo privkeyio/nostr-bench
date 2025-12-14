@@ -13,9 +13,8 @@ zig-out/
 .DS_Store
 Thumbs.db
 
-# Benchmark reports
-/reports/
-*.json
+# Benchmark reports (JSON files only)
+/reports/*.json
 
 # Runtime data
 /data/

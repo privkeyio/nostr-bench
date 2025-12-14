@@ -4,9 +4,7 @@ const nostr = @import("nostr.zig");
 const relay = @import("relay.zig");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.c_allocator;
 
     const config = parseArgs(allocator) catch |err| {
         std.debug.print("Error parsing arguments: {}\n", .{err});

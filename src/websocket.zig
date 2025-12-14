@@ -64,8 +64,9 @@ pub const Client = struct {
     }
 
     pub fn connect(self: *Client) !void {
-        const address = std.net.Address.resolveIp(self.host, self.port) catch {
-            const list = std.net.getAddressList(self.allocator, self.host, self.port) catch return error.ConnectionFailed;
+        const host = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;
+        const address = std.net.Address.resolveIp(host, self.port) catch {
+            const list = std.net.getAddressList(self.allocator, host, self.port) catch return error.ConnectionFailed;
             defer list.deinit();
             if (list.addrs.len == 0) return error.ConnectionFailed;
             self.stream = std.net.tcpConnectToAddress(list.addrs[0]) catch return error.ConnectionFailed;

@@ -4,8 +4,8 @@
     .fingerprint = 0x8e285c4d4549b8cf,
     .dependencies = .{
         .nostr = .{
-            .url = "https://github.com/privkeyio/libnostr-z/archive/refs/tags/v0.1.3.tar.gz",
-            .hash = "nostr-0.1.3-JY6OcMvvAQAb8-_jKK5MJyq4GiCJyGWIrev-_2DgAkHm",
+            .url = "https://github.com/privkeyio/libnostr-z/archive/refs/tags/v0.1.4.tar.gz",
+            .hash = "nostr-0.1.4-JY6OcFh2AgB5YK3QafwNO3QREmDCKbclnYlVKRusBw9_",
         },
     },
     .paths = .{

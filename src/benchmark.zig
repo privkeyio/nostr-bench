@@ -58,6 +58,12 @@ pub const Benchmark = struct {
             const result = try self.runConcurrentQueryStoreTest();
             try self.results.append(self.allocator, result);
         }
+
+        if (self.config.run_search) {
+            std.debug.print("\nRunning NIP-50 Search Test...\n", .{});
+            const result = try self.runSearchTest();
+            try self.results.append(self.allocator, result);
+        }
     }
 
     fn runPeakThroughputTest(self: *Benchmark) !BenchmarkResult {
@@ -450,6 +456,91 @@ pub const Benchmark = struct {
         stats.recordEnd();
 
         return BenchmarkResult.fromStats(&stats, "Concurrent Query/Store", self.config.workers);
+    }
+
+    fn runSearchTest(self: *Benchmark) !BenchmarkResult {
+        var stats = Stats.init(self.allocator);
+        defer stats.deinit();
+
+        const seed_events = try event_gen.generateSearchableEvents(self.allocator, &self.keypair, 1000);
+        defer {
+            for (seed_events) |*ev| {
+                ev.deinit();
+            }
+            self.allocator.free(seed_events);
+        }
+
+        var client = try websocket.Client.init(self.allocator, self.config.relay_url);
+        defer client.deinit();
+
+        client.connect() catch {
+            stats.recordEnd();
+            return BenchmarkResult.fromStats(&stats, "NIP-50 Search", 1);
+        };
+        client.setReadTimeout(5000);
+
+        for (seed_events) |*ev| {
+            client.sendEvent(ev) catch continue;
+            _ = client.receive() catch continue;
+        }
+
+        stats.recordStart();
+
+        const search_queries = [_][]const u8{
+            "bitcoin",
+            "nostr",
+            "lightning",
+            "satoshi",
+            "zap",
+        };
+
+        const num_queries = self.config.num_events;
+        var query_count: u32 = 0;
+
+        while (query_count < num_queries) : (query_count += 1) {
+            const search_term = search_queries[query_count % search_queries.len];
+            const filter = nostr.Filter{
+                .kinds = &[_]i32{1},
+                .search = search_term,
+                .limit = 50,
+            };
+            const filters = [_]nostr.Filter{filter};
+
+            const start_ns = std.time.nanoTimestamp();
+
+            var sub_buf: [32]u8 = undefined;
+            const sub_id = std.fmt.bufPrint(&sub_buf, "s{d}", .{query_count}) catch "s0";
+
+            client.sendReq(sub_id, &filters) catch {
+                stats.recordError();
+                continue;
+            };
+
+            var received_eose = false;
+            while (!received_eose) {
+                if (client.receive()) |response| {
+                    if (response) |data| {
+                        const msg = nostr.RelayMsg.parse(data, self.allocator) catch continue;
+                        if (msg.msg_type == .eose) {
+                            received_eose = true;
+                        }
+                    } else {
+                        break;
+                    }
+                } else |_| {
+                    break;
+                }
+            }
+
+            client.sendClose(sub_id) catch {};
+
+            const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+            try stats.recordSuccess(latency);
+        }
+
+        stats.recordEnd();
+
+        return BenchmarkResult.fromStats(&stats, "NIP-50 Search", 1);
     }
 
     pub fn printReport(self: *Benchmark) void {

@@ -61,6 +61,7 @@ pub fn main() !void {
             .run_mixed_rw = config.run_mixed_rw,
             .run_query = config.run_query,
             .run_concurrent_rw = config.run_concurrent_rw,
+            .run_search = config.run_search,
             .async_publish = config.async_publish,
         };
 
@@ -97,6 +98,7 @@ pub const Config = struct {
     run_mixed_rw: bool = true,
     run_query: bool = true,
     run_concurrent_rw: bool = true,
+    run_search: bool = true,
     async_publish: bool = false,
 };
 
@@ -142,26 +144,37 @@ fn parseArgs(allocator: std.mem.Allocator) !Config {
             config.run_mixed_rw = false;
             config.run_query = false;
             config.run_concurrent_rw = false;
+            config.run_search = false;
         } else if (std.mem.eql(u8, arg, "--only-burst")) {
             config.run_peak_throughput = false;
             config.run_mixed_rw = false;
             config.run_query = false;
             config.run_concurrent_rw = false;
+            config.run_search = false;
         } else if (std.mem.eql(u8, arg, "--only-mixed")) {
             config.run_peak_throughput = false;
             config.run_burst_pattern = false;
             config.run_query = false;
             config.run_concurrent_rw = false;
+            config.run_search = false;
         } else if (std.mem.eql(u8, arg, "--only-query")) {
             config.run_peak_throughput = false;
             config.run_burst_pattern = false;
             config.run_mixed_rw = false;
             config.run_concurrent_rw = false;
+            config.run_search = false;
         } else if (std.mem.eql(u8, arg, "--only-concurrent")) {
             config.run_peak_throughput = false;
             config.run_burst_pattern = false;
             config.run_mixed_rw = false;
             config.run_query = false;
+            config.run_search = false;
+        } else if (std.mem.eql(u8, arg, "--only-search")) {
+            config.run_peak_throughput = false;
+            config.run_burst_pattern = false;
+            config.run_mixed_rw = false;
+            config.run_query = false;
+            config.run_concurrent_rw = false;
         } else if (std.mem.eql(u8, arg, "--async")) {
             config.async_publish = true;
         } else if (std.mem.eql(u8, arg, "--report-file")) {
@@ -201,6 +214,7 @@ fn printUsage() void {
         \\    --only-mixed            Run only mixed read/write test
         \\    --only-query            Run only query performance test
         \\    --only-concurrent       Run only concurrent query/store test
+        \\    --only-search           Run only NIP-50 search test
         \\
         \\EXAMPLES:
         \\    nostr-bench -r ws://localhost:7777 -e 10000 -w 8 --rate 1000

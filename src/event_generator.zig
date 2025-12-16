@@ -171,6 +171,75 @@ pub fn generateGraphEvents(
     return events;
 }
 
+pub fn generateSearchableEvents(
+    allocator: std.mem.Allocator,
+    keypair: *const nostr.Keypair,
+    count: u32,
+) ![]nostr.Event {
+    _ = keypair;
+    std.debug.print("Generating {d} searchable events...\n", .{count});
+
+    const events = try allocator.alloc(nostr.Event, count);
+    errdefer allocator.free(events);
+
+    const base_time = std.time.timestamp();
+
+    const templates = [_][]const u8{
+        "Just discovered Bitcoin and it's changing how I think about money! #bitcoin",
+        "Building on Nostr is amazing - the protocol is so simple yet powerful. #nostr",
+        "Lightning Network is the future of payments. Instant and nearly free! #lightning #bitcoin",
+        "Reading about Satoshi Nakamoto's vision in the whitepaper again. #satoshi #bitcoin",
+        "Just got my first zap on Nostr! This is incredible. #zap #nostr #lightning",
+        "Bitcoin fixes the money printer problem. Sound money for everyone. #bitcoin",
+        "The Nostr community is growing fast! So many great apps being built. #nostr",
+        "Lightning channels are the plumbing of the future financial system. #lightning",
+        "Satoshi's invention will be studied for centuries. #satoshi",
+        "Sending zaps is so much fun! Instant micropayments. #zap",
+        "Stacking sats and building on Nostr. The future is decentralized! #bitcoin #nostr",
+        "Lightning wallet UX is getting really good. #lightning",
+        "Who is Satoshi? Does it even matter anymore? #satoshi #bitcoin",
+        "Zapped my favorite content creator today. Supporting creators has never been easier. #zap #nostr",
+        "Bitcoin, Nostr, Lightning - the holy trinity of freedom tech. #bitcoin #nostr #lightning",
+    };
+
+    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    const random = prng.random();
+
+    for (events, 0..) |*event, i| {
+        const event_keypair = nostr.Keypair.generate();
+
+        event.* = nostr.Event{
+            .id = [_]u8{0} ** 32,
+            .pubkey = [_]u8{0} ** 32,
+            .created_at = base_time - @as(i64, @intCast(count - i)),
+            .kind = 1,
+            .tags = &[_][]const []const u8{},
+            .content = undefined,
+            .sig = [_]u8{0} ** 64,
+            .allocator = allocator,
+        };
+
+        const template = templates[random.intRangeAtMost(usize, 0, templates.len - 1)];
+        var content_buf: [512]u8 = undefined;
+        const rand_suffix = random.int(u32);
+        const content_len = std.fmt.bufPrint(&content_buf, "{s} Event #{d}-{x}", .{
+            template,
+            i,
+            rand_suffix,
+        }) catch unreachable;
+
+        event.content = try allocator.dupe(u8, content_len);
+        try nostr.signEvent(event, &event_keypair);
+
+        if ((i + 1) % 500 == 0) {
+            std.debug.print("  Generated {d}/{d} searchable events...\n", .{ i + 1, count });
+        }
+    }
+
+    std.debug.print("Generated {d} searchable events\n", .{count});
+    return events;
+}
+
 test "generate events" {
     const allocator = std.testing.allocator;
     const keypair = nostr.Keypair.generate();

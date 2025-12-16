@@ -112,6 +112,7 @@ pub const Filter = struct {
     since: ?i64 = null,
     until: ?i64 = null,
     limit: ?u32 = null,
+    search: ?[]const u8 = null,
 
     pub fn serialize(self: *const Filter, buf: []u8) ![]u8 {
         var fbs = std.io.fixedBufferStream(buf);
@@ -175,7 +176,15 @@ pub const Filter = struct {
 
         if (self.limit) |limit| {
             if (!first) try writer.writeByte(',');
+            first = false;
             try writer.print("\"limit\":{d}", .{limit});
+        }
+
+        if (self.search) |search_query| {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("\"search\":\"");
+            try Event.writeJsonEscaped(writer, search_query);
+            try writer.writeByte('"');
         }
 
         try writer.writeByte('}');

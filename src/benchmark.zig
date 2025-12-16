@@ -440,10 +440,12 @@ pub const Benchmark = struct {
             });
         }
 
+        const queries_per_reader: u32 = @min(250, @as(u32, @intCast(self.config.num_events)) / 4 / @max(1, @as(u32, @intCast(num_readers))));
+
         for (num_writers..total_threads) |i| {
             threads[i] = try std.Thread.spawn(.{}, queryWorkerThread, .{
                 self.config.relay_url,
-                self.config.num_events / 4,
+                queries_per_reader,
                 &shared_stats,
                 self.allocator,
             });
@@ -746,7 +748,9 @@ fn queryWorkerThread(
         };
 
         var received_eose = false;
-        while (!received_eose) {
+        var recv_count: u32 = 0;
+        const max_recv: u32 = 200;
+        while (!received_eose and recv_count < max_recv) : (recv_count += 1) {
             if (client.receive()) |response| {
                 if (response) |data| {
                     const msg = nostr.RelayMsg.parse(data, allocator) catch continue;
@@ -765,7 +769,11 @@ fn queryWorkerThread(
 
         const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
         shared.mu.lock();
-        shared.stats.recordSuccess(latency) catch {};
+        if (received_eose) {
+            shared.stats.recordSuccess(latency) catch {};
+        } else {
+            shared.stats.recordError();
+        }
         shared.mu.unlock();
 
         std.Thread.sleep(1_000_000);

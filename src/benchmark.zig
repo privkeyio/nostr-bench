@@ -321,8 +321,8 @@ pub const Benchmark = struct {
 
         stats.recordStart();
 
-        // Run queries
-        const num_queries = self.config.num_events;
+        // Run queries (capped at 1000 for reasonable test duration)
+        const num_queries = @min(1000, self.config.num_events);
         var query_count: u32 = 0;
 
         const query_types = [_]nostr.Filter{
@@ -365,7 +365,11 @@ pub const Benchmark = struct {
             client.sendClose(sub_id) catch {};
 
             const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
-            try stats.recordSuccess(latency);
+            if (received_eose) {
+                try stats.recordSuccess(latency);
+            } else {
+                stats.recordError();
+            }
 
             // Small delay between queries
             std.Thread.sleep(1_000_000); // 1ms
@@ -440,7 +444,8 @@ pub const Benchmark = struct {
             });
         }
 
-        const queries_per_reader: u32 = @min(250, @as(u32, @intCast(self.config.num_events)) / 4 / @max(1, @as(u32, @intCast(num_readers))));
+        // Cap queries per reader for reasonable test duration (250 max = 1000 total with 4 readers)
+        const queries_per_reader: u32 = @min(250, @as(u32, @intCast(self.config.num_events)) / 4);
 
         for (num_writers..total_threads) |i| {
             threads[i] = try std.Thread.spawn(.{}, queryWorkerThread, .{

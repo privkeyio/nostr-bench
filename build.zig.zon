@@ -1,6 +1,6 @@
 .{
     .name = .nostr_bench,
-    .version = "0.1.0",
+    .version = "0.1.1",
     .fingerprint = 0x8e285c4d4549b8cf,
     .dependencies = .{
         .nostr = .{

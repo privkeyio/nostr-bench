@@ -40,4 +40,4 @@ zig build -Doptimize=ReleaseFast
 
 ## License
 
-LGPL v2.1
+AGPL-3.0

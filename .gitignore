@@ -22,3 +22,6 @@ Thumbs.db
 
 # External relay sources (cloned by setup.sh)
 /external/
+
+# Dependency fetch cache
+zig-pkg/

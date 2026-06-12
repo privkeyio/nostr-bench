@@ -15,7 +15,7 @@ pub const RelayManager = struct {
     pub fn init(allocator: std.mem.Allocator) RelayManager {
         return .{
             .allocator = allocator,
-            .instances = .{},
+            .instances = .empty,
         };
     }
 

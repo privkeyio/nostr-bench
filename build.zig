@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.root_module.strip = optimize == .ReleaseSmall or optimize == .ReleaseFast;
-    exe.linkLibC();
+    exe.root_module.link_libc = true;
 
     b.installArtifact(exe);
 

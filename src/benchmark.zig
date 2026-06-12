@@ -19,8 +19,8 @@ pub const Benchmark = struct {
         return .{
             .allocator = allocator,
             .config = config,
-            .results = .{},
-            .keypair = nostr.Keypair.generate(),
+            .results = .empty,
+            .keypair = try nostr.Keypair.generate(),
         };
     }
 
@@ -85,7 +85,7 @@ pub const Benchmark = struct {
 
         var shared_stats = SharedStats{
             .stats = &stats,
-            .mu = .{},
+            .mu = .init,
         };
 
         const events_per_worker = events.len / self.config.workers;
@@ -156,7 +156,7 @@ pub const Benchmark = struct {
             // Burst
             const burst_end = @min(event_idx + burst_size, events.len);
             while (event_idx < burst_end) : (event_idx += 1) {
-                const start_ns = std.time.nanoTimestamp();
+                const start_ns = nostr.io.nanoTimestamp();
 
                 client.sendEvent(&events[event_idx]) catch {
                     stats.recordError();
@@ -171,7 +171,7 @@ pub const Benchmark = struct {
                             continue;
                         };
                         if (msg.msg_type == .ok and msg.success) {
-                            const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+                            const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                             try stats.recordSuccess(latency);
                         } else {
                             stats.recordError();
@@ -181,11 +181,11 @@ pub const Benchmark = struct {
                     stats.recordError();
                 }
 
-                std.Thread.sleep(burst_interval_ns);
+                try std.Io.sleep(nostr.io.io(), .{ .nanoseconds = @intCast(burst_interval_ns) }, .awake);
             }
 
             // Quiet period
-            std.Thread.sleep(quiet_period_ns);
+            try std.Io.sleep(nostr.io.io(), .{ .nanoseconds = @intCast(quiet_period_ns) }, .awake);
         }
 
         stats.recordEnd();
@@ -223,7 +223,7 @@ pub const Benchmark = struct {
         while (i < events.len) : (i += 1) {
             rate_limiter.wait();
 
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = nostr.io.nanoTimestamp();
 
             if (i % 3 == 0) {
                 // Read operation (query)
@@ -257,7 +257,7 @@ pub const Benchmark = struct {
 
                 client.sendClose("bench-sub") catch {};
 
-                const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+                const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                 try stats.recordSuccess(latency);
             } else {
                 // Write operation
@@ -274,7 +274,7 @@ pub const Benchmark = struct {
                             continue;
                         };
                         if (msg.msg_type == .ok and msg.success) {
-                            const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+                            const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                             try stats.recordSuccess(latency);
                         } else {
                             stats.recordError();
@@ -335,7 +335,7 @@ pub const Benchmark = struct {
             const filter = query_types[query_count % query_types.len];
             const filters = [_]nostr.Filter{filter};
 
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = nostr.io.nanoTimestamp();
 
             var sub_buf: [32]u8 = undefined;
             const sub_id = std.fmt.bufPrint(&sub_buf, "q{d}", .{query_count}) catch "q0";
@@ -364,7 +364,7 @@ pub const Benchmark = struct {
 
             client.sendClose(sub_id) catch {};
 
-            const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+            const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
             if (received_eose) {
                 try stats.recordSuccess(latency);
             } else {
@@ -372,7 +372,7 @@ pub const Benchmark = struct {
             }
 
             // Small delay between queries
-            std.Thread.sleep(1_000_000); // 1ms
+            try std.Io.sleep(nostr.io.io(), .{ .nanoseconds = 1_000_000 }, .awake); // 1ms
         }
 
         stats.recordEnd();
@@ -425,7 +425,7 @@ pub const Benchmark = struct {
 
         var shared_stats = SharedStats{
             .stats = &stats,
-            .mu = .{},
+            .mu = .init,
         };
 
         const events_per_writer = if (num_writers > 0) events.len / num_writers else 0;
@@ -513,7 +513,7 @@ pub const Benchmark = struct {
             };
             const filters = [_]nostr.Filter{filter};
 
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = nostr.io.nanoTimestamp();
 
             var sub_buf: [32]u8 = undefined;
             const sub_id = std.fmt.bufPrint(&sub_buf, "s{d}", .{query_count}) catch "s0";
@@ -541,7 +541,7 @@ pub const Benchmark = struct {
 
             client.sendClose(sub_id) catch {};
 
-            const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+            const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
             try stats.recordSuccess(latency);
         }
 
@@ -587,69 +587,85 @@ pub const Benchmark = struct {
     }
 
     pub fn writeJsonReport(self: *Benchmark, path: []const u8, relay_name: ?[]const u8, relay_commit: ?[]const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        const io = nostr.io.io();
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
 
         var buf: [512]u8 = undefined;
 
-        try file.writeAll("{\n");
-        const url_line = std.fmt.bufPrint(&buf, "  \"relay_url\": \"{s}\",\n", .{self.config.relay_url}) catch return error.BufferTooSmall;
-        try file.writeAll(url_line);
+        try file.writeStreamingAll(io, "{\n");
+        try writeReportLine(file, io, &buf, "  \"relay_url\": \"{s}\",\n", .{self.config.relay_url});
         if (relay_name) |name| {
-            const name_line = std.fmt.bufPrint(&buf, "  \"relay_name\": \"{s}\",\n", .{name}) catch return error.BufferTooSmall;
-            try file.writeAll(name_line);
+            try writeReportLine(file, io, &buf, "  \"relay_name\": \"{s}\",\n", .{name});
         }
         if (relay_commit) |commit| {
-            const commit_line = std.fmt.bufPrint(&buf, "  \"relay_commit\": \"{s}\",\n", .{commit}) catch return error.BufferTooSmall;
-            try file.writeAll(commit_line);
+            try writeReportLine(file, io, &buf, "  \"relay_commit\": \"{s}\",\n", .{commit});
         }
-        const workers_line = std.fmt.bufPrint(&buf, "  \"workers\": {d},\n", .{self.config.workers}) catch return error.BufferTooSmall;
-        try file.writeAll(workers_line);
-        const events_line = std.fmt.bufPrint(&buf, "  \"num_events\": {d},\n", .{self.config.num_events}) catch return error.BufferTooSmall;
-        try file.writeAll(events_line);
-        const async_line = std.fmt.bufPrint(&buf, "  \"async_mode\": {s},\n", .{if (self.config.async_publish) "true" else "false"}) catch return error.BufferTooSmall;
-        try file.writeAll(async_line);
-        try file.writeAll("  \"results\": [\n");
+        try writeReportLine(file, io, &buf, "  \"workers\": {d},\n", .{self.config.workers});
+        try writeReportLine(file, io, &buf, "  \"num_events\": {d},\n", .{self.config.num_events});
+        try writeReportLine(file, io, &buf, "  \"async_mode\": {s},\n", .{if (self.config.async_publish) "true" else "false"});
+        try file.writeStreamingAll(io, "  \"results\": [\n");
 
         for (self.results.items, 0..) |result, i| {
-            try file.writeAll("    {\n");
-            const test_line = std.fmt.bufPrint(&buf, "      \"test\": \"{s}\",\n", .{result.test_name}) catch return error.BufferTooSmall;
-            try file.writeAll(test_line);
-            const eps_line = std.fmt.bufPrint(&buf, "      \"events_per_second\": {d:.2},\n", .{result.events_per_second}) catch return error.BufferTooSmall;
-            try file.writeAll(eps_line);
-            const avg_line = std.fmt.bufPrint(&buf, "      \"avg_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.avg_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
-            try file.writeAll(avg_line);
-            const p50_line = std.fmt.bufPrint(&buf, "      \"p50_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p50_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
-            try file.writeAll(p50_line);
-            const p90_line = std.fmt.bufPrint(&buf, "      \"p90_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p90_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
-            try file.writeAll(p90_line);
-            const p95_line = std.fmt.bufPrint(&buf, "      \"p95_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p95_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
-            try file.writeAll(p95_line);
-            const p99_line = std.fmt.bufPrint(&buf, "      \"p99_latency_ms\": {d:.3},\n", .{@as(f64, @floatFromInt(result.p99_latency_ns)) / 1_000_000.0}) catch return error.BufferTooSmall;
-            try file.writeAll(p99_line);
-            const sr_line = std.fmt.bufPrint(&buf, "      \"success_rate\": {d:.1},\n", .{result.success_rate}) catch return error.BufferTooSmall;
-            try file.writeAll(sr_line);
-            const te_line = std.fmt.bufPrint(&buf, "      \"total_events\": {d},\n", .{result.total_events}) catch return error.BufferTooSmall;
-            try file.writeAll(te_line);
-            const err_line = std.fmt.bufPrint(&buf, "      \"errors\": {d}\n", .{result.errors}) catch return error.BufferTooSmall;
-            try file.writeAll(err_line);
+            try file.writeStreamingAll(io, "    {\n");
+            try writeReportLine(file, io, &buf, "      \"test\": \"{s}\",\n", .{result.test_name});
+            try writeReportLine(file, io, &buf, "      \"events_per_second\": {d:.2},\n", .{result.events_per_second});
+            try writeReportLine(file, io, &buf, "      \"avg_latency_ms\": {d:.3},\n", .{msFromNs(result.avg_latency_ns)});
+            try writeReportLine(file, io, &buf, "      \"p50_latency_ms\": {d:.3},\n", .{msFromNs(result.p50_latency_ns)});
+            try writeReportLine(file, io, &buf, "      \"p90_latency_ms\": {d:.3},\n", .{msFromNs(result.p90_latency_ns)});
+            try writeReportLine(file, io, &buf, "      \"p95_latency_ms\": {d:.3},\n", .{msFromNs(result.p95_latency_ns)});
+            try writeReportLine(file, io, &buf, "      \"p99_latency_ms\": {d:.3},\n", .{msFromNs(result.p99_latency_ns)});
+            try writeReportLine(file, io, &buf, "      \"success_rate\": {d:.1},\n", .{result.success_rate});
+            try writeReportLine(file, io, &buf, "      \"total_events\": {d},\n", .{result.total_events});
+            try writeReportLine(file, io, &buf, "      \"errors\": {d}\n", .{result.errors});
             if (i < self.results.items.len - 1) {
-                try file.writeAll("    },\n");
+                try file.writeStreamingAll(io, "    },\n");
             } else {
-                try file.writeAll("    }\n");
+                try file.writeStreamingAll(io, "    }\n");
             }
         }
 
-        try file.writeAll("  ]\n");
-        try file.writeAll("}\n");
+        try file.writeStreamingAll(io, "  ]\n");
+        try file.writeStreamingAll(io, "}\n");
 
         std.debug.print("\nReport written to: {s}\n", .{path});
     }
 };
 
+fn msFromNs(ns: i64) f64 {
+    return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+}
+
+/// Formats one JSON line into the scratch buffer and streams it to the file.
+fn writeReportLine(file: anytype, io: std.Io, buf: []u8, comptime fmt: []const u8, args: anytype) !void {
+    const formatted = std.fmt.bufPrint(buf, fmt, args) catch return error.BufferTooSmall;
+    try file.writeStreamingAll(io, formatted);
+}
+
 const SharedStats = struct {
     stats: *Stats,
-    mu: std.Thread.Mutex,
+    // Workers are OS threads (std.Thread.spawn) and nostr.io is the process-global
+    // blocking (thread-backed) Io, so this Mutex provides real cross-thread mutual
+    // exclusion. This relies on that blocking-io model, not an event-loop io.
+    mu: std.Io.Mutex,
+
+    fn recordError(self: *SharedStats) void {
+        self.mu.lockUncancelable(nostr.io.io());
+        defer self.mu.unlock(nostr.io.io());
+        self.stats.recordError();
+    }
+
+    fn recordSuccess(self: *SharedStats, latency: i64) void {
+        self.mu.lockUncancelable(nostr.io.io());
+        defer self.mu.unlock(nostr.io.io());
+        self.stats.recordSuccess(latency) catch {};
+    }
+
+    fn recordRateLimited(self: *SharedStats, latency: i64) void {
+        self.mu.lockUncancelable(nostr.io.io());
+        defer self.mu.unlock(nostr.io.io());
+        self.stats.recordRateLimited(latency) catch {};
+    }
 };
 
 fn workerThread(
@@ -671,12 +687,10 @@ fn workerThread(
     for (events) |*ev| {
         rate_limiter.wait();
 
-        const start_ns = std.time.nanoTimestamp();
+        const start_ns = nostr.io.nanoTimestamp();
 
         client.sendEvent(ev) catch {
-            shared.mu.lock();
-            shared.stats.recordError();
-            shared.mu.unlock();
+            shared.recordError();
             continue;
         };
 
@@ -684,35 +698,21 @@ fn workerThread(
         if (client.receive()) |response| {
             if (response) |data| {
                 const msg = nostr.RelayMsg.parse(data, std.heap.page_allocator) catch {
-                    shared.mu.lock();
-                    shared.stats.recordError();
-                    shared.mu.unlock();
+                    shared.recordError();
                     continue;
                 };
 
-                const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+                const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                 if (msg.msg_type == .ok and (msg.success or msg.is_duplicate)) {
-                    shared.mu.lock();
-                    shared.stats.recordSuccess(latency) catch {};
-                    shared.mu.unlock();
+                    shared.recordSuccess(latency);
                 } else if (msg.msg_type == .ok and msg.is_rate_limited) {
-                    shared.mu.lock();
-                    shared.stats.recordRateLimited(latency) catch {};
-                    shared.mu.unlock();
-                } else if (msg.msg_type == .ok) {
-                    shared.mu.lock();
-                    shared.stats.recordError();
-                    shared.mu.unlock();
+                    shared.recordRateLimited(latency);
                 } else {
-                    shared.mu.lock();
-                    shared.stats.recordError();
-                    shared.mu.unlock();
+                    shared.recordError();
                 }
             }
         } else |_| {
-            shared.mu.lock();
-            shared.stats.recordError();
-            shared.mu.unlock();
+            shared.recordError();
         }
     }
 }
@@ -740,15 +740,13 @@ fn queryWorkerThread(
         const filter = query_types[query_count % query_types.len];
         const filters = [_]nostr.Filter{filter};
 
-        const start_ns = std.time.nanoTimestamp();
+        const start_ns = nostr.io.nanoTimestamp();
 
         var sub_buf: [32]u8 = undefined;
         const sub_id = std.fmt.bufPrint(&sub_buf, "q{d}", .{query_count}) catch "q0";
 
         client.sendReq(sub_id, &filters) catch {
-            shared.mu.lock();
-            shared.stats.recordError();
-            shared.mu.unlock();
+            shared.recordError();
             continue;
         };
 
@@ -772,16 +770,14 @@ fn queryWorkerThread(
 
         client.sendClose(sub_id) catch {};
 
-        const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
-        shared.mu.lock();
+        const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
         if (received_eose) {
-            shared.stats.recordSuccess(latency) catch {};
+            shared.recordSuccess(latency);
         } else {
-            shared.stats.recordError();
+            shared.recordError();
         }
-        shared.mu.unlock();
 
-        std.Thread.sleep(1_000_000);
+        std.Io.sleep(nostr.io.io(), .{ .nanoseconds = 1_000_000 }, .awake) catch {};
     }
 }
 
@@ -801,18 +797,14 @@ fn asyncWorkerThread(
     for (events) |*ev| {
         rate_limiter.wait();
 
-        const start_ns = std.time.nanoTimestamp();
+        const start_ns = nostr.io.nanoTimestamp();
 
         client.sendEvent(ev) catch {
-            shared.mu.lock();
-            shared.stats.recordError();
-            shared.mu.unlock();
+            shared.recordError();
             continue;
         };
 
-        const latency: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
-        shared.mu.lock();
-        shared.stats.recordSuccess(latency) catch {};
-        shared.mu.unlock();
+        const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
+        shared.recordSuccess(latency);
     }
 }

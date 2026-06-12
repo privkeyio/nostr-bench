@@ -12,7 +12,7 @@ pub fn generateEvents(
     const events = try allocator.alloc(nostr.Event, count);
     errdefer allocator.free(events);
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
 
     const min_content_size: usize = 300;
     const base_content = "This is a benchmark test event with realistic content size. ";
@@ -22,11 +22,11 @@ pub fn generateEvents(
         byte.* = ' ' + @as(u8, @intCast(i % 94));
     }
 
-    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(nostr.io.nanoTimestamp()))));
     const random = prng.random();
 
     for (events, 0..) |*event, i| {
-        const event_keypair = nostr.Keypair.generate();
+        const event_keypair = try nostr.Keypair.generate();
 
         event.* = nostr.Event{
             .id = [_]u8{0} ** 32,
@@ -49,7 +49,7 @@ pub fn generateEvents(
         }) catch unreachable;
 
         event.content = try allocator.dupe(u8, content_len);
-        try nostr.signEvent(event, &event_keypair);
+        try nostr.signEvent(allocator, event, &event_keypair);
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -71,10 +71,10 @@ pub fn generateVariableSizeEvents(
     const events = try allocator.alloc(nostr.Event, count);
     errdefer allocator.free(events);
 
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(nostr.io.timestamp()));
     const random = prng.random();
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
     var total_size: u64 = 0;
 
     for (events, 0..) |*event, i| {
@@ -102,7 +102,7 @@ pub fn generateVariableSizeEvents(
         event.content = content;
         total_size += content_size;
 
-        try nostr.signEvent(event, keypair);
+        try nostr.signEvent(allocator, event, keypair);
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -132,10 +132,10 @@ pub fn generateGraphEvents(
     const events = try allocator.alloc(nostr.Event, total_events);
     errdefer allocator.free(events);
 
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(nostr.io.timestamp()));
     const random = prng.random();
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
     var event_idx: usize = 0;
 
     for (keypairs, 0..) |*kp, user_idx| {
@@ -157,7 +157,7 @@ pub fn generateGraphEvents(
                 .allocator = allocator,
             };
 
-            try nostr.signEvent(&events[event_idx], kp);
+            try nostr.signEvent(allocator, &events[event_idx], kp);
             event_idx += 1;
         }
 
@@ -182,7 +182,7 @@ pub fn generateSearchableEvents(
     const events = try allocator.alloc(nostr.Event, count);
     errdefer allocator.free(events);
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
 
     const templates = [_][]const u8{
         "Just discovered Bitcoin and it's changing how I think about money! #bitcoin",
@@ -202,11 +202,11 @@ pub fn generateSearchableEvents(
         "Bitcoin, Nostr, Lightning - the holy trinity of freedom tech. #bitcoin #nostr #lightning",
     };
 
-    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(nostr.io.nanoTimestamp()))));
     const random = prng.random();
 
     for (events, 0..) |*event, i| {
-        const event_keypair = nostr.Keypair.generate();
+        const event_keypair = try nostr.Keypair.generate();
 
         event.* = nostr.Event{
             .id = [_]u8{0} ** 32,
@@ -229,7 +229,7 @@ pub fn generateSearchableEvents(
         }) catch unreachable;
 
         event.content = try allocator.dupe(u8, content_len);
-        try nostr.signEvent(event, &event_keypair);
+        try nostr.signEvent(allocator, event, &event_keypair);
 
         if ((i + 1) % 500 == 0) {
             std.debug.print("  Generated {d}/{d} searchable events...\n", .{ i + 1, count });
@@ -242,7 +242,7 @@ pub fn generateSearchableEvents(
 
 test "generate events" {
     const allocator = std.testing.allocator;
-    const keypair = nostr.Keypair.generate();
+    const keypair = try nostr.Keypair.generate();
 
     const events = try generateEvents(allocator, &keypair, 10);
     defer {

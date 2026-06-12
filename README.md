@@ -2,6 +2,8 @@
 
 Nostr relay benchmark tool written in Zig.
 
+> Requires Zig 0.16. For Zig 0.15, use the `v0.1.1` release.
+
 ## Build
 
 ```bash

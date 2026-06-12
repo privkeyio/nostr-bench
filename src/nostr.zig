@@ -1,6 +1,7 @@
 const std = @import("std");
 const nostr_lib = @import("nostr");
 const crypto = nostr_lib.crypto;
+pub const io = nostr_lib.io;
 
 pub const Error = error{
     InvalidJson,
@@ -45,8 +46,8 @@ pub const Event = struct {
     }
 
     pub fn serialize(self: *const Event, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
+        const writer = &w;
 
         try writer.writeAll("{\"id\":\"");
         try writeHex(writer, &self.id);
@@ -76,7 +77,7 @@ pub const Event = struct {
         try writeHex(writer, &self.sig);
         try writer.writeAll("\"}");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 
     fn writeHex(writer: anytype, bytes: []const u8) !void {
@@ -115,8 +116,8 @@ pub const Filter = struct {
     search: ?[]const u8 = null,
 
     pub fn serialize(self: *const Filter, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
+        const writer = &w;
 
         try writer.writeByte('{');
         var first = true;
@@ -189,7 +190,7 @@ pub const Filter = struct {
 
         try writer.writeByte('}');
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 };
 
@@ -254,7 +255,7 @@ pub const RelayMsg = struct {
             msg.msg_type = .count;
             if (arr.len > 2 and arr[2] == .object) {
                 if (arr[2].object.get("count")) |c| {
-                    if (c == .integer) {
+                    if (c == .integer and c.integer >= 0) {
                         msg.count = @intCast(c.integer);
                     }
                 }
@@ -267,45 +268,42 @@ pub const RelayMsg = struct {
 
 pub const ClientMsg = struct {
     pub fn event(ev: *const Event, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
 
-        try writer.writeAll("[\"EVENT\",");
-        const event_json = try ev.serialize(buf[fbs.pos..]);
-        fbs.pos += event_json.len;
-        try writer.writeAll("]");
+        try w.writeAll("[\"EVENT\",");
+        const event_json = try ev.serialize(buf[w.end..]);
+        w.end += event_json.len;
+        try w.writeAll("]");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 
     pub fn req(sub_id: []const u8, filters: []const Filter, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
 
-        try writer.writeAll("[\"REQ\",\"");
-        try writer.writeAll(sub_id);
-        try writer.writeByte('"');
+        try w.writeAll("[\"REQ\",\"");
+        try w.writeAll(sub_id);
+        try w.writeByte('"');
 
         for (filters) |filter| {
-            try writer.writeByte(',');
-            const filter_json = try filter.serialize(buf[fbs.pos..]);
-            fbs.pos += filter_json.len;
+            try w.writeByte(',');
+            const filter_json = try filter.serialize(buf[w.end..]);
+            w.end += filter_json.len;
         }
 
-        try writer.writeAll("]");
+        try w.writeAll("]");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 
     pub fn close(sub_id: []const u8, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
 
-        try writer.writeAll("[\"CLOSE\",\"");
-        try writer.writeAll(sub_id);
-        try writer.writeAll("\"]");
+        try w.writeAll("[\"CLOSE\",\"");
+        try w.writeAll(sub_id);
+        try w.writeAll("\"]");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 };
 
@@ -313,14 +311,12 @@ pub const Keypair = struct {
     secret_key: [32]u8,
     public_key: [32]u8,
 
-    pub fn generate() Keypair {
+    pub fn generate() !Keypair {
         var secret_key: [32]u8 = undefined;
-        std.crypto.random.bytes(&secret_key);
+        io.randomBytes(&secret_key);
 
         var public_key: [32]u8 = undefined;
-        crypto.getPublicKey(&secret_key, &public_key) catch {
-            std.crypto.random.bytes(&public_key);
-        };
+        try crypto.getPublicKey(&secret_key, &public_key);
 
         return .{
             .secret_key = secret_key,
@@ -337,45 +333,38 @@ pub fn cleanup() void {
     crypto.cleanup();
 }
 
-pub fn signEvent(event: *Event, keypair: *const Keypair) !void {
+pub fn signEvent(allocator: std.mem.Allocator, event: *Event, keypair: *const Keypair) !void {
     @memcpy(&event.pubkey, &keypair.public_key);
 
-    var commitment_buf: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&commitment_buf);
-    const writer = fbs.writer();
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    const writer = &aw.writer;
 
-    writer.writeAll("[0,\"") catch unreachable;
+    try writer.writeAll("[0,\"");
+    try Event.writeHex(writer, &keypair.public_key);
+    try writer.writeAll("\",");
+    try writer.print("{d}", .{event.created_at});
+    try writer.writeByte(',');
+    try writer.print("{d}", .{event.kind});
+    try writer.writeAll(",[");
 
-    for (&keypair.public_key) |byte| {
-        writer.print("{x:0>2}", .{byte}) catch unreachable;
-    }
-
-    writer.writeAll("\",") catch unreachable;
-    writer.print("{d}", .{event.created_at}) catch unreachable;
-    writer.writeAll(",") catch unreachable;
-    writer.print("{d}", .{event.kind}) catch unreachable;
-    writer.writeAll(",[],\"") catch unreachable;
-
-    for (event.content) |c| {
-        switch (c) {
-            '"' => writer.writeAll("\\\"") catch unreachable,
-            '\\' => writer.writeAll("\\\\") catch unreachable,
-            '\n' => writer.writeAll("\\n") catch unreachable,
-            '\r' => writer.writeAll("\\r") catch unreachable,
-            '\t' => writer.writeAll("\\t") catch unreachable,
-            else => {
-                if (c < 0x20) {
-                    writer.print("\\u{x:0>4}", .{c}) catch unreachable;
-                } else {
-                    writer.writeByte(c) catch unreachable;
-                }
-            },
+    for (event.tags, 0..) |tag, i| {
+        if (i > 0) try writer.writeByte(',');
+        try writer.writeByte('[');
+        for (tag, 0..) |elem, j| {
+            if (j > 0) try writer.writeByte(',');
+            try writer.writeByte('"');
+            try Event.writeJsonEscaped(writer, elem);
+            try writer.writeByte('"');
         }
+        try writer.writeByte(']');
     }
 
-    writer.writeAll("\"]") catch unreachable;
+    try writer.writeAll("],\"");
+    try Event.writeJsonEscaped(writer, event.content);
+    try writer.writeAll("\"]");
 
-    const commitment = fbs.getWritten();
+    const commitment = aw.written();
     std.crypto.hash.sha2.Sha256.hash(commitment, &event.id, .{});
 
     crypto.sign(&keypair.secret_key, &event.id, &event.sig) catch {
@@ -396,5 +385,45 @@ test "event serialization" {
 
     var buf: [4096]u8 = undefined;
     const json = try event.serialize(&buf);
-    try std.testing.expect(json.len > 0);
+
+    const zeros32 = "0" ** 64;
+    const zeros64 = "0" ** 128;
+    const expected = "{\"id\":\"" ++ zeros32 ++ "\",\"pubkey\":\"" ++ zeros32 ++
+        "\",\"created_at\":1234567890,\"kind\":1,\"tags\":[],\"content\":\"test\",\"sig\":\"" ++ zeros64 ++ "\"}";
+    try std.testing.expectEqualStrings(expected, json);
+}
+
+test "event serialization with tags" {
+    const event = Event{
+        .id = [_]u8{0} ** 32,
+        .pubkey = [_]u8{0} ** 32,
+        .created_at = 1,
+        .kind = 1,
+        .tags = &[_][]const []const u8{
+            &[_][]const u8{ "e", "abc" },
+            &[_][]const u8{"p"},
+        },
+        .content = "",
+        .sig = [_]u8{0} ** 64,
+    };
+
+    var buf: [4096]u8 = undefined;
+    const json = try event.serialize(&buf);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tags\":[[\"e\",\"abc\"],[\"p\"]]") != null);
+}
+
+test "event serialization escapes content" {
+    const event = Event{
+        .id = [_]u8{0} ** 32,
+        .pubkey = [_]u8{0} ** 32,
+        .created_at = 1,
+        .kind = 1,
+        .tags = &[_][]const []const u8{},
+        .content = "a\"b\\c\nd",
+        .sig = [_]u8{0} ** 64,
+    };
+
+    var buf: [4096]u8 = undefined;
+    const json = try event.serialize(&buf);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"a\\\"b\\\\c\\nd\"") != null);
 }

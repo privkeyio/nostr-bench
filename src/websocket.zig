@@ -194,6 +194,15 @@ pub const Client = struct {
         try self.writeAll(frame_buf[0..frame_len]);
     }
 
+    fn readExact(handle: std.posix.socket_t, buf: []u8) !void {
+        var total: usize = 0;
+        while (total < buf.len) {
+            const n = std.posix.read(handle, buf[total..]) catch return error.ReceiveFailed;
+            if (n == 0) return error.ReceiveFailed;
+            total += n;
+        }
+    }
+
     pub fn receive(self: *Client) !?[]const u8 {
         const stream = self.stream orelse return error.ConnectionFailed;
 
@@ -211,11 +220,11 @@ pub const Client = struct {
         // Extended payload length
         if (payload_len == 126) {
             var ext_len: [2]u8 = undefined;
-            _ = std.posix.read(stream.socket.handle, &ext_len) catch return error.ReceiveFailed;
+            try readExact(stream.socket.handle, &ext_len);
             payload_len = (@as(u64, ext_len[0]) << 8) | ext_len[1];
         } else if (payload_len == 127) {
             var ext_len: [8]u8 = undefined;
-            _ = std.posix.read(stream.socket.handle, &ext_len) catch return error.ReceiveFailed;
+            try readExact(stream.socket.handle, &ext_len);
             payload_len = 0;
             for (ext_len) |b| {
                 payload_len = (payload_len << 8) | b;
@@ -229,7 +238,7 @@ pub const Client = struct {
         // Read masking key if present
         var mask: [4]u8 = undefined;
         if (masked) {
-            _ = std.posix.read(stream.socket.handle, &mask) catch return error.ReceiveFailed;
+            try readExact(stream.socket.handle, &mask);
         }
 
         // Read payload. posix.read blocks (thread-backed io); a peer closing

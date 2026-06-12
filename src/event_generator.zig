@@ -26,7 +26,7 @@ pub fn generateEvents(
     const random = prng.random();
 
     for (events, 0..) |*event, i| {
-        const event_keypair = nostr.Keypair.generate();
+        const event_keypair = try nostr.Keypair.generate();
 
         event.* = nostr.Event{
             .id = [_]u8{0} ** 32,
@@ -49,7 +49,7 @@ pub fn generateEvents(
         }) catch unreachable;
 
         event.content = try allocator.dupe(u8, content_len);
-        try nostr.signEvent(event, &event_keypair);
+        try nostr.signEvent(allocator, event, &event_keypair);
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -102,7 +102,7 @@ pub fn generateVariableSizeEvents(
         event.content = content;
         total_size += content_size;
 
-        try nostr.signEvent(event, keypair);
+        try nostr.signEvent(allocator, event, keypair);
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -157,7 +157,7 @@ pub fn generateGraphEvents(
                 .allocator = allocator,
             };
 
-            try nostr.signEvent(&events[event_idx], kp);
+            try nostr.signEvent(allocator, &events[event_idx], kp);
             event_idx += 1;
         }
 
@@ -206,7 +206,7 @@ pub fn generateSearchableEvents(
     const random = prng.random();
 
     for (events, 0..) |*event, i| {
-        const event_keypair = nostr.Keypair.generate();
+        const event_keypair = try nostr.Keypair.generate();
 
         event.* = nostr.Event{
             .id = [_]u8{0} ** 32,
@@ -229,7 +229,7 @@ pub fn generateSearchableEvents(
         }) catch unreachable;
 
         event.content = try allocator.dupe(u8, content_len);
-        try nostr.signEvent(event, &event_keypair);
+        try nostr.signEvent(allocator, event, &event_keypair);
 
         if ((i + 1) % 500 == 0) {
             std.debug.print("  Generated {d}/{d} searchable events...\n", .{ i + 1, count });
@@ -242,7 +242,7 @@ pub fn generateSearchableEvents(
 
 test "generate events" {
     const allocator = std.testing.allocator;
-    const keypair = nostr.Keypair.generate();
+    const keypair = try nostr.Keypair.generate();
 
     const events = try generateEvents(allocator, &keypair, 10);
     defer {

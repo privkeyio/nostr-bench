@@ -20,6 +20,8 @@ pub const Client = struct {
     path: []const u8,
     connected: bool = false,
     recv_buf: [65536]u8 = undefined,
+    write_buf: [4096]u8 = undefined,
+    stream_writer: ?net.Stream.Writer = null,
 
     pub fn init(allocator: std.mem.Allocator, url: []const u8) !Client {
         var client = Client{
@@ -73,14 +75,17 @@ pub const Client = struct {
             const host_name = net.HostName.init(host) catch return error.ConnectionFailed;
             self.stream = host_name.connect(io, self.port, .{ .mode = .stream }) catch return error.ConnectionFailed;
         }
+        self.stream_writer = self.stream.?.writer(io, &self.write_buf);
+        // Blocking-io requirement: handshake reads block until the relay responds,
+        // so set socket send/recv timeouts before any handshake I/O.
+        self.setReadTimeout(5000);
+        self.setWriteTimeout(5000);
         try self.performHandshake();
         self.connected = true;
     }
 
     fn writeAll(self: *Client, data: []const u8) !void {
-        const stream = self.stream orelse return error.ConnectionFailed;
-        var wbuf: [4096]u8 = undefined;
-        var sw = stream.writer(nostr.io.io(), &wbuf);
+        const sw = if (self.stream_writer) |*w| w else return error.ConnectionFailed;
         sw.interface.writeAll(data) catch return error.SendFailed;
         sw.interface.flush() catch return error.SendFailed;
     }
@@ -92,6 +97,15 @@ pub const Client = struct {
             .usec = @intCast((timeout_ms % 1000) * 1000),
         };
         std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+    }
+
+    pub fn setWriteTimeout(self: *Client, timeout_ms: u32) void {
+        const stream = self.stream orelse return;
+        const timeout = std.posix.timeval{
+            .sec = @intCast(timeout_ms / 1000),
+            .usec = @intCast((timeout_ms % 1000) * 1000),
+        };
+        std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
     }
 
     fn performHandshake(self: *Client) !void {
@@ -109,11 +123,19 @@ pub const Client = struct {
 
         try self.writeAll(request);
 
+        // The 101 response may arrive across multiple packets; read until we see
+        // the end of the headers (\r\n\r\n) or the buffer fills. Socket recv
+        // timeout (set before this call) bounds a stalled handshake.
         var response_buf: [1024]u8 = undefined;
-        const n = std.posix.read(stream.socket.handle, &response_buf) catch return error.ReceiveFailed;
-        if (n == 0) return error.ConnectionFailed;
+        var total: usize = 0;
+        while (total < response_buf.len) {
+            const n = std.posix.read(stream.socket.handle, response_buf[total..]) catch return error.ReceiveFailed;
+            if (n == 0) return error.ConnectionFailed;
+            total += n;
+            if (std.mem.indexOf(u8, response_buf[0..total], "\r\n\r\n") != null) break;
+        }
 
-        if (!std.mem.startsWith(u8, response_buf[0..n], "HTTP/1.1 101")) {
+        if (!std.mem.startsWith(u8, response_buf[0..total], "HTTP/1.1 101")) {
             return error.ConnectionFailed;
         }
     }
@@ -125,6 +147,7 @@ pub const Client = struct {
             self.writeAll(&close_frame) catch {};
             stream.close(nostr.io.io());
             self.stream = null;
+            self.stream_writer = null;
         }
         self.connected = false;
     }
@@ -206,7 +229,8 @@ pub const Client = struct {
             _ = std.posix.read(stream.socket.handle, &mask) catch return error.ReceiveFailed;
         }
 
-        // Read payload
+        // Read payload. posix.read blocks (thread-backed io); a peer closing
+        // mid-frame returns 0, leaving the frame truncated.
         const payload_usize: usize = @intCast(payload_len);
         var total_read: usize = 0;
         while (total_read < payload_usize) {
@@ -214,6 +238,9 @@ pub const Client = struct {
             if (n == 0) break;
             total_read += n;
         }
+
+        // A truncated frame would unmask/return uninitialized recv_buf bytes.
+        if (total_read < payload_usize) return error.ReceiveFailed;
 
         // Unmask if needed
         if (masked) {

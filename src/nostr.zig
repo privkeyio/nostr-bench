@@ -255,7 +255,7 @@ pub const RelayMsg = struct {
             msg.msg_type = .count;
             if (arr.len > 2 and arr[2] == .object) {
                 if (arr[2].object.get("count")) |c| {
-                    if (c == .integer) {
+                    if (c == .integer and c.integer >= 0) {
                         msg.count = @intCast(c.integer);
                     }
                 }
@@ -311,14 +311,12 @@ pub const Keypair = struct {
     secret_key: [32]u8,
     public_key: [32]u8,
 
-    pub fn generate() Keypair {
+    pub fn generate() !Keypair {
         var secret_key: [32]u8 = undefined;
         io.randomBytes(&secret_key);
 
         var public_key: [32]u8 = undefined;
-        crypto.getPublicKey(&secret_key, &public_key) catch {
-            io.randomBytes(&public_key);
-        };
+        try crypto.getPublicKey(&secret_key, &public_key);
 
         return .{
             .secret_key = secret_key,
@@ -335,45 +333,38 @@ pub fn cleanup() void {
     crypto.cleanup();
 }
 
-pub fn signEvent(event: *Event, keypair: *const Keypair) !void {
+pub fn signEvent(allocator: std.mem.Allocator, event: *Event, keypair: *const Keypair) !void {
     @memcpy(&event.pubkey, &keypair.public_key);
 
-    var commitment_buf: [8192]u8 = undefined;
-    var w = std.Io.Writer.fixed(&commitment_buf);
-    const writer = &w;
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    const writer = &aw.writer;
 
-    writer.writeAll("[0,\"") catch unreachable;
+    try writer.writeAll("[0,\"");
+    try Event.writeHex(writer, &keypair.public_key);
+    try writer.writeAll("\",");
+    try writer.print("{d}", .{event.created_at});
+    try writer.writeByte(',');
+    try writer.print("{d}", .{event.kind});
+    try writer.writeAll(",[");
 
-    for (&keypair.public_key) |byte| {
-        writer.print("{x:0>2}", .{byte}) catch unreachable;
-    }
-
-    writer.writeAll("\",") catch unreachable;
-    writer.print("{d}", .{event.created_at}) catch unreachable;
-    writer.writeAll(",") catch unreachable;
-    writer.print("{d}", .{event.kind}) catch unreachable;
-    writer.writeAll(",[],\"") catch unreachable;
-
-    for (event.content) |c| {
-        switch (c) {
-            '"' => writer.writeAll("\\\"") catch unreachable,
-            '\\' => writer.writeAll("\\\\") catch unreachable,
-            '\n' => writer.writeAll("\\n") catch unreachable,
-            '\r' => writer.writeAll("\\r") catch unreachable,
-            '\t' => writer.writeAll("\\t") catch unreachable,
-            else => {
-                if (c < 0x20) {
-                    writer.print("\\u{x:0>4}", .{c}) catch unreachable;
-                } else {
-                    writer.writeByte(c) catch unreachable;
-                }
-            },
+    for (event.tags, 0..) |tag, i| {
+        if (i > 0) try writer.writeByte(',');
+        try writer.writeByte('[');
+        for (tag, 0..) |elem, j| {
+            if (j > 0) try writer.writeByte(',');
+            try writer.writeByte('"');
+            try Event.writeJsonEscaped(writer, elem);
+            try writer.writeByte('"');
         }
+        try writer.writeByte(']');
     }
 
-    writer.writeAll("\"]") catch unreachable;
+    try writer.writeAll("],\"");
+    try Event.writeJsonEscaped(writer, event.content);
+    try writer.writeAll("\"]");
 
-    const commitment = w.buffered();
+    const commitment = aw.written();
     std.crypto.hash.sha2.Sha256.hash(commitment, &event.id, .{});
 
     crypto.sign(&keypair.secret_key, &event.id, &event.sig) catch {

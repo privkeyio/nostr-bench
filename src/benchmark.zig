@@ -20,7 +20,7 @@ pub const Benchmark = struct {
             .allocator = allocator,
             .config = config,
             .results = .empty,
-            .keypair = nostr.Keypair.generate(),
+            .keypair = try nostr.Keypair.generate(),
         };
     }
 
@@ -650,6 +650,9 @@ pub const Benchmark = struct {
 
 const SharedStats = struct {
     stats: *Stats,
+    // Workers are OS threads (std.Thread.spawn) and nostr.io is the process-global
+    // blocking (thread-backed) Io, so this Mutex provides real cross-thread mutual
+    // exclusion. This relies on that blocking-io model, not an event-loop io.
     mu: std.Io.Mutex,
 };
 

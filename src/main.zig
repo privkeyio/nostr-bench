@@ -104,11 +104,11 @@ pub const Config = struct {
 
 fn parseArgs(allocator: std.mem.Allocator, args_src: std.process.Args) !Config {
     var args = std.process.Args.Iterator.init(args_src);
-    defer args.deinit();
 
     _ = args.skip();
 
     var relay_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer relay_list.deinit(allocator);
 
     var config = Config{
         .workers = @intCast(@max(2, (std.Thread.getCpuCount() catch 4) / 4)),
@@ -187,6 +187,7 @@ fn parseArgs(allocator: std.mem.Allocator, args_src: std.process.Args) !Config {
     }
 
     config.relays = relay_list.items;
+    config.workers = @max(1, config.workers);
     return config;
 }
 

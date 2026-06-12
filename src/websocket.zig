@@ -1,5 +1,6 @@
 const std = @import("std");
 const nostr = @import("nostr.zig");
+const net = std.Io.net;
 
 pub const WebSocketError = error{
     ConnectionFailed,
@@ -13,7 +14,7 @@ pub const WebSocketError = error{
 /// Simple WebSocket client for Nostr relay connections
 pub const Client = struct {
     allocator: std.mem.Allocator,
-    stream: ?std.net.Stream = null,
+    stream: ?net.Stream = null,
     host: []const u8,
     port: u16,
     path: []const u8,
@@ -64,20 +65,24 @@ pub const Client = struct {
     }
 
     pub fn connect(self: *Client) !void {
+        const io = nostr.io.io();
         const host = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;
-        const address = std.net.Address.resolveIp(host, self.port) catch {
-            const list = std.net.getAddressList(self.allocator, host, self.port) catch return error.ConnectionFailed;
-            defer list.deinit();
-            if (list.addrs.len == 0) return error.ConnectionFailed;
-            self.stream = std.net.tcpConnectToAddress(list.addrs[0]) catch return error.ConnectionFailed;
-            try self.performHandshake();
-            self.connected = true;
-            return;
-        };
-
-        self.stream = std.net.tcpConnectToAddress(address) catch return error.ConnectionFailed;
+        if (net.IpAddress.parse(host, self.port)) |address| {
+            self.stream = address.connect(io, .{ .mode = .stream }) catch return error.ConnectionFailed;
+        } else |_| {
+            const host_name = net.HostName.init(host) catch return error.ConnectionFailed;
+            self.stream = host_name.connect(io, self.port, .{ .mode = .stream }) catch return error.ConnectionFailed;
+        }
         try self.performHandshake();
         self.connected = true;
+    }
+
+    fn writeAll(self: *Client, data: []const u8) !void {
+        const stream = self.stream orelse return error.ConnectionFailed;
+        var wbuf: [4096]u8 = undefined;
+        var sw = stream.writer(nostr.io.io(), &wbuf);
+        sw.interface.writeAll(data) catch return error.SendFailed;
+        sw.interface.flush() catch return error.SendFailed;
     }
 
     pub fn setReadTimeout(self: *Client, timeout_ms: u32) void {
@@ -86,7 +91,7 @@ pub const Client = struct {
             .sec = @intCast(timeout_ms / 1000),
             .usec = @intCast((timeout_ms % 1000) * 1000),
         };
-        std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+        std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
     }
 
     fn performHandshake(self: *Client) !void {
@@ -94,7 +99,7 @@ pub const Client = struct {
 
         // Generate random key
         var key_bytes: [16]u8 = undefined;
-        std.crypto.random.bytes(&key_bytes);
+        nostr.io.randomBytes(&key_bytes);
 
         var key_buf: [24]u8 = undefined;
         const key = std.base64.standard.Encoder.encode(&key_buf, &key_bytes);
@@ -102,10 +107,10 @@ pub const Client = struct {
         var request_buf: [1024]u8 = undefined;
         const request = std.fmt.bufPrint(&request_buf, "GET {s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n", .{ self.path, self.host, self.port, key }) catch return error.ConnectionFailed;
 
-        _ = stream.write(request) catch return error.SendFailed;
+        try self.writeAll(request);
 
         var response_buf: [1024]u8 = undefined;
-        const n = stream.read(&response_buf) catch return error.ReceiveFailed;
+        const n = std.posix.read(stream.socket.handle, &response_buf) catch return error.ReceiveFailed;
         if (n == 0) return error.ConnectionFailed;
 
         if (!std.mem.startsWith(u8, response_buf[0..n], "HTTP/1.1 101")) {
@@ -117,15 +122,15 @@ pub const Client = struct {
         if (self.stream) |stream| {
             // Send close frame
             const close_frame = [_]u8{ 0x88, 0x80, 0, 0, 0, 0 }; // Close frame with mask
-            _ = stream.write(&close_frame) catch {};
-            stream.close();
+            self.writeAll(&close_frame) catch {};
+            stream.close(nostr.io.io());
             self.stream = null;
         }
         self.connected = false;
     }
 
     pub fn send(self: *Client, data: []const u8) !void {
-        const stream = self.stream orelse return error.ConnectionFailed;
+        _ = self.stream orelse return error.ConnectionFailed;
 
         // Build WebSocket frame (text frame, masked)
         var frame_buf: [65546]u8 = undefined;
@@ -150,7 +155,7 @@ pub const Client = struct {
 
         // Masking key (random)
         var mask: [4]u8 = undefined;
-        std.crypto.random.bytes(&mask);
+        nostr.io.randomBytes(&mask);
         @memcpy(frame_buf[frame_len..][0..4], &mask);
         frame_len += 4;
 
@@ -160,7 +165,7 @@ pub const Client = struct {
         }
         frame_len += data.len;
 
-        _ = stream.write(frame_buf[0..frame_len]) catch return error.SendFailed;
+        try self.writeAll(frame_buf[0..frame_len]);
     }
 
     pub fn receive(self: *Client) !?[]const u8 {
@@ -168,7 +173,7 @@ pub const Client = struct {
 
         // Read frame header
         var header: [2]u8 = undefined;
-        const header_read = stream.read(&header) catch return error.ReceiveFailed;
+        const header_read = std.posix.read(stream.socket.handle, &header) catch return error.ReceiveFailed;
         if (header_read == 0) return null;
         if (header_read < 2) return error.ReceiveFailed;
 
@@ -180,11 +185,11 @@ pub const Client = struct {
         // Extended payload length
         if (payload_len == 126) {
             var ext_len: [2]u8 = undefined;
-            _ = stream.read(&ext_len) catch return error.ReceiveFailed;
+            _ = std.posix.read(stream.socket.handle, &ext_len) catch return error.ReceiveFailed;
             payload_len = (@as(u64, ext_len[0]) << 8) | ext_len[1];
         } else if (payload_len == 127) {
             var ext_len: [8]u8 = undefined;
-            _ = stream.read(&ext_len) catch return error.ReceiveFailed;
+            _ = std.posix.read(stream.socket.handle, &ext_len) catch return error.ReceiveFailed;
             payload_len = 0;
             for (ext_len) |b| {
                 payload_len = (payload_len << 8) | b;
@@ -198,14 +203,14 @@ pub const Client = struct {
         // Read masking key if present
         var mask: [4]u8 = undefined;
         if (masked) {
-            _ = stream.read(&mask) catch return error.ReceiveFailed;
+            _ = std.posix.read(stream.socket.handle, &mask) catch return error.ReceiveFailed;
         }
 
         // Read payload
         const payload_usize: usize = @intCast(payload_len);
         var total_read: usize = 0;
         while (total_read < payload_usize) {
-            const n = stream.read(self.recv_buf[total_read..payload_usize]) catch return error.ReceiveFailed;
+            const n = std.posix.read(stream.socket.handle, self.recv_buf[total_read..payload_usize]) catch return error.ReceiveFailed;
             if (n == 0) break;
             total_read += n;
         }
@@ -229,8 +234,8 @@ pub const Client = struct {
             },
             0x09 => { // Ping
                 // Send pong
-                var pong_frame: [2]u8 = .{ 0x8A, 0x80 };
-                _ = stream.write(&pong_frame) catch {};
+                const pong_frame: [2]u8 = .{ 0x8A, 0x80 };
+                self.writeAll(&pong_frame) catch {};
                 return self.receive(); // Continue reading
             },
             0x0A => { // Pong
@@ -246,54 +251,51 @@ pub const Client = struct {
     pub fn sendEvent(self: *Client, event: *const nostr.Event) !void {
         var buf: [65536]u8 = undefined;
 
-        var fbs = std.io.fixedBufferStream(&buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(&buf);
 
-        try writer.writeAll("[\"EVENT\",");
+        try w.writeAll("[\"EVENT\",");
 
         // Serialize event
-        const event_start = fbs.pos;
+        const event_start = w.end;
         const event_json = try event.serialize(buf[event_start..]);
-        fbs.pos = event_start + event_json.len;
+        w.end = event_start + event_json.len;
 
-        try writer.writeAll("]");
+        try w.writeAll("]");
 
-        try self.send(fbs.getWritten());
+        try self.send(w.buffered());
     }
 
     /// Send a Nostr REQ message
     pub fn sendReq(self: *Client, sub_id: []const u8, filters: []const nostr.Filter) !void {
         var buf: [65536]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(&buf);
 
-        try writer.writeAll("[\"REQ\",\"");
-        try writer.writeAll(sub_id);
-        try writer.writeByte('"');
+        try w.writeAll("[\"REQ\",\"");
+        try w.writeAll(sub_id);
+        try w.writeByte('"');
 
         for (filters) |filter| {
-            try writer.writeByte(',');
-            const filter_start = fbs.pos;
+            try w.writeByte(',');
+            const filter_start = w.end;
             const filter_json = try filter.serialize(buf[filter_start..]);
-            fbs.pos = filter_start + filter_json.len;
+            w.end = filter_start + filter_json.len;
         }
 
-        try writer.writeAll("]");
+        try w.writeAll("]");
 
-        try self.send(fbs.getWritten());
+        try self.send(w.buffered());
     }
 
     /// Send a Nostr CLOSE message
     pub fn sendClose(self: *Client, sub_id: []const u8) !void {
         var buf: [256]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(&buf);
 
-        try writer.writeAll("[\"CLOSE\",\"");
-        try writer.writeAll(sub_id);
-        try writer.writeAll("\"]");
+        try w.writeAll("[\"CLOSE\",\"");
+        try w.writeAll(sub_id);
+        try w.writeAll("\"]");
 
-        try self.send(fbs.getWritten());
+        try self.send(w.buffered());
     }
 };
 

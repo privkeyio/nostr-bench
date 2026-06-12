@@ -12,7 +12,7 @@ pub fn generateEvents(
     const events = try allocator.alloc(nostr.Event, count);
     errdefer allocator.free(events);
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
 
     const min_content_size: usize = 300;
     const base_content = "This is a benchmark test event with realistic content size. ";
@@ -22,7 +22,7 @@ pub fn generateEvents(
         byte.* = ' ' + @as(u8, @intCast(i % 94));
     }
 
-    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(nostr.io.nanoTimestamp()))));
     const random = prng.random();
 
     for (events, 0..) |*event, i| {
@@ -71,10 +71,10 @@ pub fn generateVariableSizeEvents(
     const events = try allocator.alloc(nostr.Event, count);
     errdefer allocator.free(events);
 
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(nostr.io.timestamp()));
     const random = prng.random();
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
     var total_size: u64 = 0;
 
     for (events, 0..) |*event, i| {
@@ -132,10 +132,10 @@ pub fn generateGraphEvents(
     const events = try allocator.alloc(nostr.Event, total_events);
     errdefer allocator.free(events);
 
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(nostr.io.timestamp()));
     const random = prng.random();
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
     var event_idx: usize = 0;
 
     for (keypairs, 0..) |*kp, user_idx| {
@@ -182,7 +182,7 @@ pub fn generateSearchableEvents(
     const events = try allocator.alloc(nostr.Event, count);
     errdefer allocator.free(events);
 
-    const base_time = std.time.timestamp();
+    const base_time = nostr.io.timestamp();
 
     const templates = [_][]const u8{
         "Just discovered Bitcoin and it's changing how I think about money! #bitcoin",
@@ -202,7 +202,7 @@ pub fn generateSearchableEvents(
         "Bitcoin, Nostr, Lightning - the holy trinity of freedom tech. #bitcoin #nostr #lightning",
     };
 
-    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    var prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(nostr.io.nanoTimestamp()))));
     const random = prng.random();
 
     for (events, 0..) |*event, i| {

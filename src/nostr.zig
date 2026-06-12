@@ -1,6 +1,7 @@
 const std = @import("std");
 const nostr_lib = @import("nostr");
 const crypto = nostr_lib.crypto;
+pub const io = nostr_lib.io;
 
 pub const Error = error{
     InvalidJson,
@@ -45,8 +46,8 @@ pub const Event = struct {
     }
 
     pub fn serialize(self: *const Event, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
+        const writer = &w;
 
         try writer.writeAll("{\"id\":\"");
         try writeHex(writer, &self.id);
@@ -76,7 +77,7 @@ pub const Event = struct {
         try writeHex(writer, &self.sig);
         try writer.writeAll("\"}");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 
     fn writeHex(writer: anytype, bytes: []const u8) !void {
@@ -115,8 +116,8 @@ pub const Filter = struct {
     search: ?[]const u8 = null,
 
     pub fn serialize(self: *const Filter, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
+        const writer = &w;
 
         try writer.writeByte('{');
         var first = true;
@@ -189,7 +190,7 @@ pub const Filter = struct {
 
         try writer.writeByte('}');
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 };
 
@@ -267,45 +268,42 @@ pub const RelayMsg = struct {
 
 pub const ClientMsg = struct {
     pub fn event(ev: *const Event, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
 
-        try writer.writeAll("[\"EVENT\",");
-        const event_json = try ev.serialize(buf[fbs.pos..]);
-        fbs.pos += event_json.len;
-        try writer.writeAll("]");
+        try w.writeAll("[\"EVENT\",");
+        const event_json = try ev.serialize(buf[w.end..]);
+        w.end += event_json.len;
+        try w.writeAll("]");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 
     pub fn req(sub_id: []const u8, filters: []const Filter, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
 
-        try writer.writeAll("[\"REQ\",\"");
-        try writer.writeAll(sub_id);
-        try writer.writeByte('"');
+        try w.writeAll("[\"REQ\",\"");
+        try w.writeAll(sub_id);
+        try w.writeByte('"');
 
         for (filters) |filter| {
-            try writer.writeByte(',');
-            const filter_json = try filter.serialize(buf[fbs.pos..]);
-            fbs.pos += filter_json.len;
+            try w.writeByte(',');
+            const filter_json = try filter.serialize(buf[w.end..]);
+            w.end += filter_json.len;
         }
 
-        try writer.writeAll("]");
+        try w.writeAll("]");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 
     pub fn close(sub_id: []const u8, buf: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buf);
-        const writer = fbs.writer();
+        var w = std.Io.Writer.fixed(buf);
 
-        try writer.writeAll("[\"CLOSE\",\"");
-        try writer.writeAll(sub_id);
-        try writer.writeAll("\"]");
+        try w.writeAll("[\"CLOSE\",\"");
+        try w.writeAll(sub_id);
+        try w.writeAll("\"]");
 
-        return fbs.getWritten();
+        return w.buffered();
     }
 };
 
@@ -315,11 +313,11 @@ pub const Keypair = struct {
 
     pub fn generate() Keypair {
         var secret_key: [32]u8 = undefined;
-        std.crypto.random.bytes(&secret_key);
+        io.randomBytes(&secret_key);
 
         var public_key: [32]u8 = undefined;
         crypto.getPublicKey(&secret_key, &public_key) catch {
-            std.crypto.random.bytes(&public_key);
+            io.randomBytes(&public_key);
         };
 
         return .{
@@ -341,8 +339,8 @@ pub fn signEvent(event: *Event, keypair: *const Keypair) !void {
     @memcpy(&event.pubkey, &keypair.public_key);
 
     var commitment_buf: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&commitment_buf);
-    const writer = fbs.writer();
+    var w = std.Io.Writer.fixed(&commitment_buf);
+    const writer = &w;
 
     writer.writeAll("[0,\"") catch unreachable;
 
@@ -375,7 +373,7 @@ pub fn signEvent(event: *Event, keypair: *const Keypair) !void {
 
     writer.writeAll("\"]") catch unreachable;
 
-    const commitment = fbs.getWritten();
+    const commitment = w.buffered();
     std.crypto.hash.sha2.Sha256.hash(commitment, &event.id, .{});
 
     crypto.sign(&keypair.secret_key, &event.id, &event.sig) catch {

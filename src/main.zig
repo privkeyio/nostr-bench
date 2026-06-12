@@ -3,10 +3,10 @@ const benchmark = @import("benchmark.zig");
 const nostr = @import("nostr.zig");
 const relay = @import("relay.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.c_allocator;
 
-    const config = parseArgs(allocator) catch |err| {
+    const config = parseArgs(allocator, init.args) catch |err| {
         std.debug.print("Error parsing arguments: {}\n", .{err});
         printUsage();
         return;
@@ -102,13 +102,13 @@ pub const Config = struct {
     async_publish: bool = false,
 };
 
-fn parseArgs(allocator: std.mem.Allocator) !Config {
-    var args = try std.process.argsWithAllocator(allocator);
+fn parseArgs(allocator: std.mem.Allocator, args_src: std.process.Args) !Config {
+    var args = std.process.Args.Iterator.init(args_src);
     defer args.deinit();
 
     _ = args.skip();
 
-    var relay_list = std.ArrayListUnmanaged([]const u8){};
+    var relay_list: std.ArrayListUnmanaged([]const u8) = .empty;
 
     var config = Config{
         .workers = @intCast(@max(2, (std.Thread.getCpuCount() catch 4) / 4)),

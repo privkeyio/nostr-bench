@@ -1,4 +1,5 @@
 const std = @import("std");
+const nostr = @import("nostr.zig");
 
 /// Statistics tracking for benchmark latencies
 pub const Stats = struct {
@@ -14,7 +15,7 @@ pub const Stats = struct {
     pub fn init(allocator: std.mem.Allocator) Stats {
         return .{
             .allocator = allocator,
-            .latencies = .{},
+            .latencies = .empty,
         };
     }
 
@@ -34,12 +35,12 @@ pub const Stats = struct {
 
     pub fn recordStart(self: *Stats) void {
         if (self.start_time == 0) {
-            self.start_time = @intCast(std.time.nanoTimestamp());
+            self.start_time = @intCast(nostr.io.nanoTimestamp());
         }
     }
 
     pub fn recordEnd(self: *Stats) void {
-        self.end_time = @intCast(std.time.nanoTimestamp());
+        self.end_time = @intCast(nostr.io.nanoTimestamp());
     }
 
     pub fn recordSuccess(self: *Stats, latency_ns: i64) !void {
@@ -208,29 +209,29 @@ pub const BenchmarkResult = struct {
 pub const RateLimiter = struct {
     interval_ns: i64,
     last_event_ns: i64,
-    mu: std.Thread.Mutex,
+    mu: std.Io.Mutex,
 
     pub fn init(events_per_second: u32) RateLimiter {
         const interval = if (events_per_second == 0) 0 else @divTrunc(@as(i64, 1_000_000_000), @as(i64, @intCast(events_per_second)));
         return .{
             .interval_ns = interval,
-            .last_event_ns = @intCast(std.time.nanoTimestamp()),
-            .mu = .{},
+            .last_event_ns = @intCast(nostr.io.nanoTimestamp()),
+            .mu = .init,
         };
     }
 
     pub fn wait(self: *RateLimiter) void {
         if (self.interval_ns == 0) return;
 
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(nostr.io.io());
+        defer self.mu.unlock(nostr.io.io());
 
-        const now: i64 = @intCast(std.time.nanoTimestamp());
+        const now: i64 = @intCast(nostr.io.nanoTimestamp());
         const next_allowed = self.last_event_ns + self.interval_ns;
 
         if (now < next_allowed) {
             const sleep_ns: u64 = @intCast(next_allowed - now);
-            std.Thread.sleep(sleep_ns);
+            std.Io.sleep(nostr.io.io(), .{ .nanoseconds = @intCast(sleep_ns) }, .awake) catch {};
             self.last_event_ns = next_allowed;
         } else {
             self.last_event_ns = now;

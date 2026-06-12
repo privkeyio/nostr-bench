@@ -11,7 +11,11 @@ pub const WebSocketError = error{
     Closed,
 };
 
-/// Simple WebSocket client for Nostr relay connections
+/// Simple WebSocket client for Nostr relay connections.
+///
+/// After connect(), stream_writer caches a pointer into write_buf, so the
+/// Client must not be moved (copied by value, or stored in a resizable
+/// container). Hold it by stable pointer for its whole lifetime.
 pub const Client = struct {
     allocator: std.mem.Allocator,
     stream: ?net.Stream = null,

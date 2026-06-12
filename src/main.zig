@@ -234,3 +234,7 @@ test "parse args" {
         .report_dir = "/tmp/benchmark_reports",
     };
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}

@@ -385,5 +385,45 @@ test "event serialization" {
 
     var buf: [4096]u8 = undefined;
     const json = try event.serialize(&buf);
-    try std.testing.expect(json.len > 0);
+
+    const zeros32 = "0" ** 64;
+    const zeros64 = "0" ** 128;
+    const expected = "{\"id\":\"" ++ zeros32 ++ "\",\"pubkey\":\"" ++ zeros32 ++
+        "\",\"created_at\":1234567890,\"kind\":1,\"tags\":[],\"content\":\"test\",\"sig\":\"" ++ zeros64 ++ "\"}";
+    try std.testing.expectEqualStrings(expected, json);
+}
+
+test "event serialization with tags" {
+    const event = Event{
+        .id = [_]u8{0} ** 32,
+        .pubkey = [_]u8{0} ** 32,
+        .created_at = 1,
+        .kind = 1,
+        .tags = &[_][]const []const u8{
+            &[_][]const u8{ "e", "abc" },
+            &[_][]const u8{"p"},
+        },
+        .content = "",
+        .sig = [_]u8{0} ** 64,
+    };
+
+    var buf: [4096]u8 = undefined;
+    const json = try event.serialize(&buf);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"tags\":[[\"e\",\"abc\"],[\"p\"]]") != null);
+}
+
+test "event serialization escapes content" {
+    const event = Event{
+        .id = [_]u8{0} ** 32,
+        .pubkey = [_]u8{0} ** 32,
+        .created_at = 1,
+        .kind = 1,
+        .tags = &[_][]const []const u8{},
+        .content = "a\"b\\c\nd",
+        .sig = [_]u8{0} ** 64,
+    };
+
+    var buf: [4096]u8 = undefined;
+    const json = try event.serialize(&buf);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"content\":\"a\\\"b\\\\c\\nd\"") != null);
 }

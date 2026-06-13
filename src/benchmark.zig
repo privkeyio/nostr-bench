@@ -1,13 +1,69 @@
 const std = @import("std");
-const nostr = @import("nostr.zig");
-const websocket = @import("websocket.zig");
+const nostr = @import("nostr");
 const stats_mod = @import("stats.zig");
 const event_gen = @import("event_generator.zig");
 
+const ws = nostr.ws;
 const Config = @import("main.zig").Config;
 const Stats = stats_mod.Stats;
 const BenchmarkResult = stats_mod.BenchmarkResult;
 const RateLimiter = stats_mod.RateLimiter;
+const Event = event_gen.Event;
+
+/// Thin benchmark-side wrapper over libnostr-z's ws.Client that speaks the
+/// Nostr client protocol (EVENT/REQ/CLOSE) and parses relay replies.
+const Conn = struct {
+    client: ws.Client,
+    allocator: std.mem.Allocator,
+    send_buf: [65536]u8 = undefined,
+
+    fn connect(allocator: std.mem.Allocator, url: []const u8) !Conn {
+        return .{
+            .client = try ws.Client.connect(allocator, url),
+            .allocator = allocator,
+        };
+    }
+
+    fn deinit(self: *Conn) void {
+        self.client.close();
+    }
+
+    fn setReadTimeout(self: *Conn, timeout_ms: u32) void {
+        self.client.setReadTimeout(timeout_ms);
+    }
+
+    fn sendEvent(self: *Conn, event: *const Event) !void {
+        var w = std.Io.Writer.fixed(&self.send_buf);
+        try w.writeAll("[\"EVENT\",");
+        const event_json = try event.serialize(self.send_buf[w.end..]);
+        w.end += event_json.len;
+        try w.writeAll("]");
+        try self.client.sendText(w.buffered());
+    }
+
+    fn sendReq(self: *Conn, sub_id: []const u8, filters: []const nostr.Filter) !void {
+        const msg = try nostr.ClientMsg.reqMsg(sub_id, filters, &self.send_buf);
+        try self.client.sendText(msg);
+    }
+
+    fn sendClose(self: *Conn, sub_id: []const u8) !void {
+        const msg = try nostr.ClientMsg.closeMsg(sub_id, &self.send_buf);
+        try self.client.sendText(msg);
+    }
+
+    /// Receives and parses the next relay message. Returns null when the
+    /// connection is closed by the peer; a malformed payload parses as
+    /// `.unknown` rather than erroring so read loops can skip it.
+    fn receive(self: *Conn, allocator: std.mem.Allocator) !?nostr.RelayMsgParsed {
+        var msg = self.client.recvMessage() catch |err| switch (err) {
+            error.EndOfStream, error.ConnectionResetByPeer => return null,
+            else => return error.ReceiveFailed,
+        };
+        defer msg.deinit();
+        return nostr.RelayMsgParsed.parse(msg.payload, allocator) catch
+            nostr.RelayMsgParsed{ .msg_type = .unknown };
+    }
+};
 
 pub const Benchmark = struct {
     allocator: std.mem.Allocator,
@@ -20,7 +76,7 @@ pub const Benchmark = struct {
             .allocator = allocator,
             .config = config,
             .results = .empty,
-            .keypair = try nostr.Keypair.generate(),
+            .keypair = nostr.Keypair.generate(),
         };
     }
 
@@ -71,12 +127,7 @@ pub const Benchmark = struct {
         defer stats.deinit();
 
         const events = try event_gen.generateEvents(self.allocator, &self.keypair, self.config.num_events);
-        defer {
-            for (events) |*ev| {
-                ev.deinit();
-            }
-            self.allocator.free(events);
-        }
+        defer event_gen.freeEvents(self.allocator, events);
 
         stats.recordStart();
 
@@ -108,7 +159,6 @@ pub const Benchmark = struct {
                     worker_events,
                     &shared_stats,
                     self.config.rate_per_worker,
-                    self.allocator,
                 });
             }
         }
@@ -128,12 +178,7 @@ pub const Benchmark = struct {
         defer stats.deinit();
 
         const events = try event_gen.generateEvents(self.allocator, &self.keypair, self.config.num_events);
-        defer {
-            for (events) |*ev| {
-                ev.deinit();
-            }
-            self.allocator.free(events);
-        }
+        defer event_gen.freeEvents(self.allocator, events);
 
         stats.recordStart();
 
@@ -143,14 +188,12 @@ pub const Benchmark = struct {
         const burst_interval_ns: u64 = 10_000_000; // 10ms between events in burst
 
         var event_idx: usize = 0;
-        var client = try websocket.Client.init(self.allocator, self.config.relay_url);
-        defer client.deinit();
-
-        client.connect() catch {
+        var conn = Conn.connect(self.allocator, self.config.relay_url) catch {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Burst Pattern", self.config.workers);
         };
-        client.setReadTimeout(5000);
+        defer conn.deinit();
+        conn.setReadTimeout(5000);
 
         while (event_idx < events.len) {
             // Burst
@@ -158,18 +201,14 @@ pub const Benchmark = struct {
             while (event_idx < burst_end) : (event_idx += 1) {
                 const start_ns = nostr.io.nanoTimestamp();
 
-                client.sendEvent(&events[event_idx]) catch {
+                conn.sendEvent(&events[event_idx]) catch {
                     stats.recordError();
                     continue;
                 };
 
                 // Wait for OK response (with timeout)
-                if (client.receive()) |response| {
-                    if (response) |data| {
-                        const msg = nostr.RelayMsg.parse(data, self.allocator) catch {
-                            stats.recordError();
-                            continue;
-                        };
+                if (conn.receive(self.allocator)) |maybe_msg| {
+                    if (maybe_msg) |msg| {
                         if (msg.msg_type == .ok and msg.success) {
                             const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                             try stats.recordSuccess(latency);
@@ -199,23 +238,16 @@ pub const Benchmark = struct {
 
         const num_events = self.config.num_events / 2; // Half for write
         const events = try event_gen.generateEvents(self.allocator, &self.keypair, num_events);
-        defer {
-            for (events) |*ev| {
-                ev.deinit();
-            }
-            self.allocator.free(events);
-        }
+        defer event_gen.freeEvents(self.allocator, events);
 
         stats.recordStart();
 
-        var client = try websocket.Client.init(self.allocator, self.config.relay_url);
-        defer client.deinit();
-
-        client.connect() catch {
+        var conn = Conn.connect(self.allocator, self.config.relay_url) catch {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Mixed Read/Write", self.config.workers);
         };
-        client.setReadTimeout(5000);
+        defer conn.deinit();
+        conn.setReadTimeout(5000);
 
         var rate_limiter = RateLimiter.init(self.config.rate_per_worker);
 
@@ -228,12 +260,12 @@ pub const Benchmark = struct {
             if (i % 3 == 0) {
                 // Read operation (query)
                 const filter = nostr.Filter{
-                    .kinds = &[_]i32{1},
-                    .limit = 10,
+                    .kinds_slice = &[_]i32{1},
+                    .limit_val = 10,
                 };
                 const filters = [_]nostr.Filter{filter};
 
-                client.sendReq("bench-sub", &filters) catch {
+                conn.sendReq("bench-sub", &filters) catch {
                     stats.recordError();
                     continue;
                 };
@@ -241,9 +273,8 @@ pub const Benchmark = struct {
                 // Read until EOSE
                 var received_eose = false;
                 while (!received_eose) {
-                    if (client.receive()) |response| {
-                        if (response) |data| {
-                            const msg = nostr.RelayMsg.parse(data, self.allocator) catch continue;
+                    if (conn.receive(self.allocator)) |maybe_msg| {
+                        if (maybe_msg) |msg| {
                             if (msg.msg_type == .eose) {
                                 received_eose = true;
                             }
@@ -255,24 +286,20 @@ pub const Benchmark = struct {
                     }
                 }
 
-                client.sendClose("bench-sub") catch {};
+                conn.sendClose("bench-sub") catch {};
 
                 const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                 try stats.recordSuccess(latency);
             } else {
                 // Write operation
-                client.sendEvent(&events[i]) catch {
+                conn.sendEvent(&events[i]) catch {
                     stats.recordError();
                     continue;
                 };
 
                 // Wait for OK
-                if (client.receive()) |response| {
-                    if (response) |data| {
-                        const msg = nostr.RelayMsg.parse(data, self.allocator) catch {
-                            stats.recordError();
-                            continue;
-                        };
+                if (conn.receive(self.allocator)) |maybe_msg| {
+                    if (maybe_msg) |msg| {
                         if (msg.msg_type == .ok and msg.success) {
                             const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                             try stats.recordSuccess(latency);
@@ -297,26 +324,19 @@ pub const Benchmark = struct {
 
         // First, populate with some events
         const seed_events = try event_gen.generateEvents(self.allocator, &self.keypair, 1000);
-        defer {
-            for (seed_events) |*ev| {
-                ev.deinit();
-            }
-            self.allocator.free(seed_events);
-        }
+        defer event_gen.freeEvents(self.allocator, seed_events);
 
-        var client = try websocket.Client.init(self.allocator, self.config.relay_url);
-        defer client.deinit();
-
-        client.connect() catch {
+        var conn = Conn.connect(self.allocator, self.config.relay_url) catch {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Query Performance", self.config.workers);
         };
-        client.setReadTimeout(5000);
+        defer conn.deinit();
+        conn.setReadTimeout(5000);
 
         // Seed the relay
         for (seed_events) |*ev| {
-            client.sendEvent(ev) catch continue;
-            _ = client.receive() catch continue;
+            conn.sendEvent(ev) catch continue;
+            _ = conn.receive(self.allocator) catch continue;
         }
 
         stats.recordStart();
@@ -326,9 +346,9 @@ pub const Benchmark = struct {
         var query_count: u32 = 0;
 
         const query_types = [_]nostr.Filter{
-            .{ .kinds = &[_]i32{1}, .limit = 100 },
-            .{ .kinds = &[_]i32{ 1, 6 }, .limit = 50 },
-            .{ .limit = 10 },
+            .{ .kinds_slice = &[_]i32{1}, .limit_val = 100 },
+            .{ .kinds_slice = &[_]i32{ 1, 6 }, .limit_val = 50 },
+            .{ .limit_val = 10 },
         };
 
         while (query_count < num_queries) : (query_count += 1) {
@@ -340,7 +360,7 @@ pub const Benchmark = struct {
             var sub_buf: [32]u8 = undefined;
             const sub_id = std.fmt.bufPrint(&sub_buf, "q{d}", .{query_count}) catch "q0";
 
-            client.sendReq(sub_id, &filters) catch {
+            conn.sendReq(sub_id, &filters) catch {
                 stats.recordError();
                 continue;
             };
@@ -348,9 +368,8 @@ pub const Benchmark = struct {
             // Read until EOSE
             var received_eose = false;
             while (!received_eose) {
-                if (client.receive()) |response| {
-                    if (response) |data| {
-                        const msg = nostr.RelayMsg.parse(data, self.allocator) catch continue;
+                if (conn.receive(self.allocator)) |maybe_msg| {
+                    if (maybe_msg) |msg| {
                         if (msg.msg_type == .eose) {
                             received_eose = true;
                         }
@@ -362,7 +381,7 @@ pub const Benchmark = struct {
                 }
             }
 
-            client.sendClose(sub_id) catch {};
+            conn.sendClose(sub_id) catch {};
 
             const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
             if (received_eose) {
@@ -386,32 +405,21 @@ pub const Benchmark = struct {
 
         const num_events = self.config.num_events / 2;
         const events = try event_gen.generateEvents(self.allocator, &self.keypair, num_events);
-        defer {
-            for (events) |*ev| {
-                ev.deinit();
-            }
-            self.allocator.free(events);
-        }
+        defer event_gen.freeEvents(self.allocator, events);
 
         const seed_events = try event_gen.generateEvents(self.allocator, &self.keypair, 1000);
-        defer {
-            for (seed_events) |*ev| {
-                ev.deinit();
-            }
-            self.allocator.free(seed_events);
-        }
+        defer event_gen.freeEvents(self.allocator, seed_events);
 
-        var seed_client = try websocket.Client.init(self.allocator, self.config.relay_url);
-        defer seed_client.deinit();
-        seed_client.connect() catch {
+        var seed_conn = Conn.connect(self.allocator, self.config.relay_url) catch {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "Concurrent Query/Store", self.config.workers);
         };
-        seed_client.setReadTimeout(5000);
+        defer seed_conn.deinit();
+        seed_conn.setReadTimeout(5000);
 
         for (seed_events) |*ev| {
-            seed_client.sendEvent(ev) catch continue;
-            _ = seed_client.receive() catch continue;
+            seed_conn.sendEvent(ev) catch continue;
+            _ = seed_conn.receive(self.allocator) catch continue;
         }
 
         stats.recordStart();
@@ -440,7 +448,6 @@ pub const Benchmark = struct {
                 worker_events,
                 &shared_stats,
                 self.config.rate_per_worker,
-                self.allocator,
             });
         }
 
@@ -452,7 +459,6 @@ pub const Benchmark = struct {
                 self.config.relay_url,
                 queries_per_reader,
                 &shared_stats,
-                self.allocator,
             });
         }
 
@@ -470,25 +476,18 @@ pub const Benchmark = struct {
         defer stats.deinit();
 
         const seed_events = try event_gen.generateSearchableEvents(self.allocator, &self.keypair, 1000);
-        defer {
-            for (seed_events) |*ev| {
-                ev.deinit();
-            }
-            self.allocator.free(seed_events);
-        }
+        defer event_gen.freeEvents(self.allocator, seed_events);
 
-        var client = try websocket.Client.init(self.allocator, self.config.relay_url);
-        defer client.deinit();
-
-        client.connect() catch {
+        var conn = Conn.connect(self.allocator, self.config.relay_url) catch {
             stats.recordEnd();
             return BenchmarkResult.fromStats(&stats, "NIP-50 Search", 1);
         };
-        client.setReadTimeout(5000);
+        defer conn.deinit();
+        conn.setReadTimeout(5000);
 
         for (seed_events) |*ev| {
-            client.sendEvent(ev) catch continue;
-            _ = client.receive() catch continue;
+            conn.sendEvent(ev) catch continue;
+            _ = conn.receive(self.allocator) catch continue;
         }
 
         stats.recordStart();
@@ -507,9 +506,9 @@ pub const Benchmark = struct {
         while (query_count < num_queries) : (query_count += 1) {
             const search_term = search_queries[query_count % search_queries.len];
             const filter = nostr.Filter{
-                .kinds = &[_]i32{1},
-                .search = search_term,
-                .limit = 50,
+                .kinds_slice = &[_]i32{1},
+                .search_str = search_term,
+                .limit_val = 50,
             };
             const filters = [_]nostr.Filter{filter};
 
@@ -518,16 +517,15 @@ pub const Benchmark = struct {
             var sub_buf: [32]u8 = undefined;
             const sub_id = std.fmt.bufPrint(&sub_buf, "s{d}", .{query_count}) catch "s0";
 
-            client.sendReq(sub_id, &filters) catch {
+            conn.sendReq(sub_id, &filters) catch {
                 stats.recordError();
                 continue;
             };
 
             var received_eose = false;
             while (!received_eose) {
-                if (client.receive()) |response| {
-                    if (response) |data| {
-                        const msg = nostr.RelayMsg.parse(data, self.allocator) catch continue;
+                if (conn.receive(self.allocator)) |maybe_msg| {
+                    if (maybe_msg) |msg| {
                         if (msg.msg_type == .eose) {
                             received_eose = true;
                         }
@@ -539,7 +537,7 @@ pub const Benchmark = struct {
                 }
             }
 
-            client.sendClose(sub_id) catch {};
+            conn.sendClose(sub_id) catch {};
 
             const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
             try stats.recordSuccess(latency);
@@ -670,17 +668,15 @@ const SharedStats = struct {
 
 fn workerThread(
     relay_url: []const u8,
-    events: []const nostr.Event,
+    events: []const Event,
     shared: *SharedStats,
     rate_per_sec: u32,
-    allocator: std.mem.Allocator,
 ) void {
-    _ = allocator;
-    var client = websocket.Client.init(std.heap.page_allocator, relay_url) catch return;
-    defer client.deinit();
+    const allocator = std.heap.c_allocator;
+    var conn = Conn.connect(allocator, relay_url) catch return;
+    defer conn.deinit();
 
-    client.connect() catch return;
-    client.setReadTimeout(5000);
+    conn.setReadTimeout(5000);
 
     var rate_limiter = RateLimiter.init(rate_per_sec);
 
@@ -689,19 +685,14 @@ fn workerThread(
 
         const start_ns = nostr.io.nanoTimestamp();
 
-        client.sendEvent(ev) catch {
+        conn.sendEvent(ev) catch {
             shared.recordError();
             continue;
         };
 
         // Wait for OK response
-        if (client.receive()) |response| {
-            if (response) |data| {
-                const msg = nostr.RelayMsg.parse(data, std.heap.page_allocator) catch {
-                    shared.recordError();
-                    continue;
-                };
-
+        if (conn.receive(allocator)) |maybe_msg| {
+            if (maybe_msg) |msg| {
                 const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                 if (msg.msg_type == .ok and (msg.success or msg.is_duplicate)) {
                     shared.recordSuccess(latency);
@@ -721,18 +712,17 @@ fn queryWorkerThread(
     relay_url: []const u8,
     num_queries: u32,
     shared: *SharedStats,
-    allocator: std.mem.Allocator,
 ) void {
-    var client = websocket.Client.init(std.heap.page_allocator, relay_url) catch return;
-    defer client.deinit();
+    const allocator = std.heap.c_allocator;
+    var conn = Conn.connect(allocator, relay_url) catch return;
+    defer conn.deinit();
 
-    client.connect() catch return;
-    client.setReadTimeout(5000);
+    conn.setReadTimeout(5000);
 
     const query_types = [_]nostr.Filter{
-        .{ .kinds = &[_]i32{1}, .limit = 100 },
-        .{ .kinds = &[_]i32{ 1, 6 }, .limit = 50 },
-        .{ .limit = 10 },
+        .{ .kinds_slice = &[_]i32{1}, .limit_val = 100 },
+        .{ .kinds_slice = &[_]i32{ 1, 6 }, .limit_val = 50 },
+        .{ .limit_val = 10 },
     };
 
     var query_count: u32 = 0;
@@ -745,7 +735,7 @@ fn queryWorkerThread(
         var sub_buf: [32]u8 = undefined;
         const sub_id = std.fmt.bufPrint(&sub_buf, "q{d}", .{query_count}) catch "q0";
 
-        client.sendReq(sub_id, &filters) catch {
+        conn.sendReq(sub_id, &filters) catch {
             shared.recordError();
             continue;
         };
@@ -754,9 +744,8 @@ fn queryWorkerThread(
         var recv_count: u32 = 0;
         const max_recv: u32 = 200;
         while (!received_eose and recv_count < max_recv) : (recv_count += 1) {
-            if (client.receive()) |response| {
-                if (response) |data| {
-                    const msg = nostr.RelayMsg.parse(data, allocator) catch continue;
+            if (conn.receive(allocator)) |maybe_msg| {
+                if (maybe_msg) |msg| {
                     if (msg.msg_type == .eose) {
                         received_eose = true;
                     }
@@ -768,7 +757,7 @@ fn queryWorkerThread(
             }
         }
 
-        client.sendClose(sub_id) catch {};
+        conn.sendClose(sub_id) catch {};
 
         const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
         if (received_eose) {
@@ -783,14 +772,13 @@ fn queryWorkerThread(
 
 fn asyncWorkerThread(
     relay_url: []const u8,
-    events: []const nostr.Event,
+    events: []const Event,
     shared: *SharedStats,
     rate_per_sec: u32,
 ) void {
-    var client = websocket.Client.init(std.heap.page_allocator, relay_url) catch return;
-    defer client.deinit();
-
-    client.connect() catch return;
+    const allocator = std.heap.c_allocator;
+    var conn = Conn.connect(allocator, relay_url) catch return;
+    defer conn.deinit();
 
     var rate_limiter = RateLimiter.init(rate_per_sec);
 
@@ -799,7 +787,7 @@ fn asyncWorkerThread(
 
         const start_ns = nostr.io.nanoTimestamp();
 
-        client.sendEvent(ev) catch {
+        conn.sendEvent(ev) catch {
             shared.recordError();
             continue;
         };

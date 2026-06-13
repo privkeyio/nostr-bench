@@ -1,15 +1,24 @@
 const std = @import("std");
-const nostr = @import("nostr.zig");
+const nostr = @import("nostr");
+
+pub const Event = nostr.EventBuilder;
+
+pub fn freeEvents(allocator: std.mem.Allocator, events: []Event) void {
+    for (events) |*ev| {
+        allocator.free(ev.content_slice);
+    }
+    allocator.free(events);
+}
 
 pub fn generateEvents(
     allocator: std.mem.Allocator,
     keypair: *const nostr.Keypair,
     count: u32,
-) ![]nostr.Event {
+) ![]Event {
     _ = keypair;
     std.debug.print("Generating {d} synthetic events...\n", .{count});
 
-    const events = try allocator.alloc(nostr.Event, count);
+    const events = try allocator.alloc(Event, count);
     errdefer allocator.free(events);
 
     const base_time = nostr.io.timestamp();
@@ -26,18 +35,7 @@ pub fn generateEvents(
     const random = prng.random();
 
     for (events, 0..) |*event, i| {
-        const event_keypair = try nostr.Keypair.generate();
-
-        event.* = nostr.Event{
-            .id = [_]u8{0} ** 32,
-            .pubkey = [_]u8{0} ** 32,
-            .created_at = base_time - @as(i64, @intCast(count - i)),
-            .kind = 1,
-            .tags = &[_][]const []const u8{},
-            .content = undefined,
-            .sig = [_]u8{0} ** 64,
-            .allocator = allocator,
-        };
+        const event_keypair = nostr.Keypair.generate();
 
         var content_buf: [512]u8 = undefined;
         const rand_suffix = random.int(u64);
@@ -48,8 +46,12 @@ pub fn generateEvents(
             padding[0..@min(padding.len, min_content_size - base_content.len - 40)],
         }) catch unreachable;
 
-        event.content = try allocator.dupe(u8, content_len);
-        try nostr.signEvent(allocator, event, &event_keypair);
+        const content = try allocator.dupe(u8, content_len);
+        errdefer allocator.free(content);
+
+        event.* = .{};
+        _ = event.setKind(1).setContent(content).setCreatedAt(base_time - @as(i64, @intCast(count - i)));
+        try event.sign(&event_keypair);
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -65,10 +67,10 @@ pub fn generateVariableSizeEvents(
     allocator: std.mem.Allocator,
     keypair: *const nostr.Keypair,
     count: u32,
-) ![]nostr.Event {
+) ![]Event {
     std.debug.print("Generating {d} variable-size events...\n", .{count});
 
-    const events = try allocator.alloc(nostr.Event, count);
+    const events = try allocator.alloc(Event, count);
     errdefer allocator.free(events);
 
     var prng = std.Random.DefaultPrng.init(@intCast(nostr.io.timestamp()));
@@ -78,17 +80,6 @@ pub fn generateVariableSizeEvents(
     var total_size: u64 = 0;
 
     for (events, 0..) |*event, i| {
-        event.* = nostr.Event{
-            .id = [_]u8{0} ** 32,
-            .pubkey = [_]u8{0} ** 32,
-            .created_at = base_time + @as(i64, @intCast(i)),
-            .kind = 1,
-            .tags = &[_][]const []const u8{},
-            .content = undefined,
-            .sig = [_]u8{0} ** 64,
-            .allocator = allocator,
-        };
-
         const uniform = random.float(f64);
         const skewed = std.math.pow(f64, uniform, 4.0);
         const max_size: usize = 100 * 1024;
@@ -96,13 +87,15 @@ pub fn generateVariableSizeEvents(
         content_size = @max(content_size, 10);
 
         const content = try allocator.alloc(u8, content_size);
+        errdefer allocator.free(content);
         for (content) |*byte| {
             byte.* = @as(u8, @intCast(random.intRangeAtMost(u8, 32, 126)));
         }
-        event.content = content;
         total_size += content_size;
 
-        try nostr.signEvent(allocator, event, keypair);
+        event.* = .{};
+        _ = event.setKind(1).setContent(content).setCreatedAt(base_time + @as(i64, @intCast(i)));
+        try event.sign(keypair);
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -119,7 +112,7 @@ pub fn generateGraphEvents(
     allocator: std.mem.Allocator,
     keypairs: []const nostr.Keypair,
     follows_per_user: u32,
-) ![]nostr.Event {
+) ![]Event {
     const num_users = keypairs.len;
     const total_events = num_users * follows_per_user;
 
@@ -129,7 +122,7 @@ pub fn generateGraphEvents(
         follows_per_user,
     });
 
-    const events = try allocator.alloc(nostr.Event, total_events);
+    const events = try allocator.alloc(Event, total_events);
     errdefer allocator.free(events);
 
     var prng = std.Random.DefaultPrng.init(@intCast(nostr.io.timestamp()));
@@ -146,18 +139,12 @@ pub fn generateGraphEvents(
                 target_idx = (target_idx + 1) % num_users;
             }
 
-            events[event_idx] = nostr.Event{
-                .id = [_]u8{0} ** 32,
-                .pubkey = [_]u8{0} ** 32,
-                .created_at = base_time + @as(i64, @intCast(event_idx)),
-                .kind = 3,
-                .tags = &[_][]const []const u8{},
-                .content = "",
-                .sig = [_]u8{0} ** 64,
-                .allocator = allocator,
-            };
+            const content = try allocator.dupe(u8, "");
+            errdefer allocator.free(content);
 
-            try nostr.signEvent(allocator, &events[event_idx], kp);
+            events[event_idx] = .{};
+            _ = events[event_idx].setKind(3).setContent(content).setCreatedAt(base_time + @as(i64, @intCast(event_idx)));
+            try events[event_idx].sign(kp);
             event_idx += 1;
         }
 
@@ -175,11 +162,11 @@ pub fn generateSearchableEvents(
     allocator: std.mem.Allocator,
     keypair: *const nostr.Keypair,
     count: u32,
-) ![]nostr.Event {
+) ![]Event {
     _ = keypair;
     std.debug.print("Generating {d} searchable events...\n", .{count});
 
-    const events = try allocator.alloc(nostr.Event, count);
+    const events = try allocator.alloc(Event, count);
     errdefer allocator.free(events);
 
     const base_time = nostr.io.timestamp();
@@ -206,18 +193,7 @@ pub fn generateSearchableEvents(
     const random = prng.random();
 
     for (events, 0..) |*event, i| {
-        const event_keypair = try nostr.Keypair.generate();
-
-        event.* = nostr.Event{
-            .id = [_]u8{0} ** 32,
-            .pubkey = [_]u8{0} ** 32,
-            .created_at = base_time - @as(i64, @intCast(count - i)),
-            .kind = 1,
-            .tags = &[_][]const []const u8{},
-            .content = undefined,
-            .sig = [_]u8{0} ** 64,
-            .allocator = allocator,
-        };
+        const event_keypair = nostr.Keypair.generate();
 
         const template = templates[random.intRangeAtMost(usize, 0, templates.len - 1)];
         var content_buf: [512]u8 = undefined;
@@ -228,8 +204,12 @@ pub fn generateSearchableEvents(
             rand_suffix,
         }) catch unreachable;
 
-        event.content = try allocator.dupe(u8, content_len);
-        try nostr.signEvent(allocator, event, &event_keypair);
+        const content = try allocator.dupe(u8, content_len);
+        errdefer allocator.free(content);
+
+        event.* = .{};
+        _ = event.setKind(1).setContent(content).setCreatedAt(base_time - @as(i64, @intCast(count - i)));
+        try event.sign(&event_keypair);
 
         if ((i + 1) % 500 == 0) {
             std.debug.print("  Generated {d}/{d} searchable events...\n", .{ i + 1, count });
@@ -241,18 +221,14 @@ pub fn generateSearchableEvents(
 }
 
 test "generate events" {
+    try nostr.init();
+    defer nostr.cleanup();
+
     const allocator = std.testing.allocator;
-    const keypair = try nostr.Keypair.generate();
+    const keypair = nostr.Keypair.generate();
 
     const events = try generateEvents(allocator, &keypair, 10);
-    defer {
-        for (events) |*ev| {
-            if (ev.allocator) |alloc| {
-                alloc.free(ev.content);
-            }
-        }
-        allocator.free(events);
-    }
+    defer freeEvents(allocator, events);
 
     try std.testing.expectEqual(@as(usize, 10), events.len);
 }

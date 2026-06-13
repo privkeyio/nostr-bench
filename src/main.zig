@@ -1,7 +1,6 @@
 const std = @import("std");
 const benchmark = @import("benchmark.zig");
-const nostr = @import("nostr.zig");
-const relay = @import("relay.zig");
+const nostr = @import("nostr");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.c_allocator;
@@ -21,24 +20,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
     std.debug.print("╚══════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
-    var manager = relay.RelayManager.init(allocator);
-    defer manager.deinit();
-
-    for (config.relays) |url| {
-        try manager.addRelay(url);
-    }
-
-    const relays = manager.getRelays();
-    if (relays.len == 0) {
+    if (config.relays.len == 0) {
         std.debug.print("No relays specified. Use --relay flag.\n", .{});
         printUsage();
         return;
     }
 
-    for (relays) |r| {
+    for (config.relays) |url| {
         std.debug.print("\n────────────────────────────────────────────────────────────\n", .{});
-        std.debug.print("Benchmarking: {s}\n", .{r.displayName()});
-        std.debug.print("URL: {s}\n", .{r.url});
+        std.debug.print("Benchmarking: {s}\n", .{url});
+        std.debug.print("URL: {s}\n", .{url});
         std.debug.print("Workers: {d}\n", .{config.workers});
         std.debug.print("Events: {d}\n", .{config.num_events});
         std.debug.print("Duration: {d}s\n", .{config.duration_secs});
@@ -50,7 +41,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         std.debug.print("────────────────────────────────────────────────────────────\n", .{});
 
         const bench_config = Config{
-            .relay_url = r.url,
+            .relay_url = url,
             .workers = config.workers,
             .num_events = config.num_events,
             .duration_secs = config.duration_secs,
@@ -69,7 +60,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         defer bench.deinit();
 
         bench.run() catch |err| {
-            std.debug.print("Benchmark failed for {s}: {}\n", .{ r.displayName(), err });
+            std.debug.print("Benchmark failed for {s}: {}\n", .{ url, err });
             continue;
         };
         bench.printReport();

@@ -1,5 +1,5 @@
 const std = @import("std");
-const nostr = @import("nostr.zig");
+const nostr = @import("nostr");
 
 /// Statistics tracking for benchmark latencies
 pub const Stats = struct {

@@ -63,6 +63,19 @@ const Conn = struct {
         return nostr.RelayMsgParsed.parse(msg.payload, allocator) catch
             nostr.RelayMsgParsed{ .msg_type = .unknown };
     }
+
+    /// Waits for the OK that acknowledges a published event, skipping unrelated
+    /// messages that may sit ahead of it on the wire (a CLOSED left over from a
+    /// prior CLOSE, a NOTICE, or a stray EVENT/EOSE). Returns the OK, or null if
+    /// the connection closes or no OK arrives within a bounded number of reads.
+    fn awaitOk(self: *Conn, allocator: std.mem.Allocator) !?nostr.RelayMsgParsed {
+        var reads: u32 = 0;
+        while (reads < 16) : (reads += 1) {
+            const msg = (try self.receive(allocator)) orelse return null;
+            if (msg.msg_type == .ok) return msg;
+        }
+        return null;
+    }
 };
 
 pub const Benchmark = struct {
@@ -207,9 +220,9 @@ pub const Benchmark = struct {
                 };
 
                 // Wait for OK response (with timeout)
-                if (conn.receive(self.allocator)) |maybe_msg| {
-                    if (maybe_msg) |msg| {
-                        if (msg.msg_type == .ok and msg.success) {
+                if (conn.awaitOk(self.allocator)) |maybe_ok| {
+                    if (maybe_ok) |ok| {
+                        if (ok.success) {
                             const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                             try stats.recordSuccess(latency);
                         } else {
@@ -298,9 +311,9 @@ pub const Benchmark = struct {
                 };
 
                 // Wait for OK
-                if (conn.receive(self.allocator)) |maybe_msg| {
-                    if (maybe_msg) |msg| {
-                        if (msg.msg_type == .ok and msg.success) {
+                if (conn.awaitOk(self.allocator)) |maybe_ok| {
+                    if (maybe_ok) |ok| {
+                        if (ok.success) {
                             const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
                             try stats.recordSuccess(latency);
                         } else {
@@ -691,12 +704,12 @@ fn workerThread(
         };
 
         // Wait for OK response
-        if (conn.receive(allocator)) |maybe_msg| {
-            if (maybe_msg) |msg| {
+        if (conn.awaitOk(allocator)) |maybe_ok| {
+            if (maybe_ok) |ok| {
                 const latency: i64 = @intCast(nostr.io.nanoTimestamp() - start_ns);
-                if (msg.msg_type == .ok and (msg.success or msg.is_duplicate)) {
+                if (ok.success or ok.is_duplicate) {
                     shared.recordSuccess(latency);
-                } else if (msg.msg_type == .ok and msg.is_rate_limited) {
+                } else if (ok.is_rate_limited) {
                     shared.recordRateLimited(latency);
                 } else {
                     shared.recordError();

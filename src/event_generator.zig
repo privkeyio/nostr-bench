@@ -19,7 +19,11 @@ pub fn generateEvents(
     std.debug.print("Generating {d} synthetic events...\n", .{count});
 
     const events = try allocator.alloc(Event, count);
-    errdefer allocator.free(events);
+    var initialized: usize = 0;
+    errdefer {
+        for (events[0..initialized]) |*ev| allocator.free(ev.content_slice);
+        allocator.free(events);
+    }
 
     const base_time = nostr.io.timestamp();
 
@@ -52,6 +56,7 @@ pub fn generateEvents(
         event.* = .{};
         _ = event.setKind(1).setContent(content).setCreatedAt(base_time - @as(i64, @intCast(count - i)));
         try event.sign(&event_keypair);
+        initialized = i + 1;
 
         if ((i + 1) % 1000 == 0) {
             std.debug.print("  Generated {d}/{d} events...\n", .{ i + 1, count });
@@ -72,7 +77,11 @@ pub fn generateSearchableEvents(
     std.debug.print("Generating {d} searchable events...\n", .{count});
 
     const events = try allocator.alloc(Event, count);
-    errdefer allocator.free(events);
+    var initialized: usize = 0;
+    errdefer {
+        for (events[0..initialized]) |*ev| allocator.free(ev.content_slice);
+        allocator.free(events);
+    }
 
     const base_time = nostr.io.timestamp();
 
@@ -115,6 +124,7 @@ pub fn generateSearchableEvents(
         event.* = .{};
         _ = event.setKind(1).setContent(content).setCreatedAt(base_time - @as(i64, @intCast(count - i)));
         try event.sign(&event_keypair);
+        initialized = i + 1;
 
         if ((i + 1) % 500 == 0) {
             std.debug.print("  Generated {d}/{d} searchable events...\n", .{ i + 1, count });

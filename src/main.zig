@@ -29,7 +29,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     for (config.relays) |url| {
         std.debug.print("\n────────────────────────────────────────────────────────────\n", .{});
         std.debug.print("Benchmarking: {s}\n", .{url});
-        std.debug.print("URL: {s}\n", .{url});
         std.debug.print("Workers: {d}\n", .{config.workers});
         std.debug.print("Events: {d}\n", .{config.num_events});
         std.debug.print("Duration: {d}s\n", .{config.duration_secs});

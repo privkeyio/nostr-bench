@@ -21,14 +21,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.root_module.strip = optimize == .ReleaseSmall or optimize == .ReleaseFast;
+    exe.root_module.strip = optimize == std.builtin.OptimizeMode.ReleaseSmall or optimize == std.builtin.OptimizeMode.ReleaseFast;
     exe.root_module.link_libc = true;
 
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    // Zig 0.17 replaced `b.args` with addPassthruArgs.
+    if (comptime @hasDecl(std.Build.Step.Run, "addPassthruArgs")) run_cmd.addPassthruArgs() else if (b.args) |args| run_cmd.addArgs(args);
     b.step("run", "Run the benchmark").dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{
